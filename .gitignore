@@ -1,0 +1,44 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Project caches and logs
+cache/
+*.log
+
+# Heavy portable binaries (Do not upload 100MB+ executables to GitHub)
+tools/*.exe
+tools/ffmpeg
+tools/ffprobe
+!tools/.gitkeep
+
+# PyInstaller / Packaging build outputs
+build/
+dist/
+*.spec
+
+# Test and temporary media outputs in project root
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.ts
+*.webm
+output/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+

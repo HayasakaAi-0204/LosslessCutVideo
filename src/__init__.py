@@ -1,0 +1,2 @@
+"""CutVideo application package."""
+
