@@ -53,6 +53,8 @@ def main():
         "--clean",
         "--onedir",
         "--windowed",  # Không hiện màn hình đen cmd
+        "--paths",
+        str(root_dir),
         "--name",
         app_name,
         str(main_py),

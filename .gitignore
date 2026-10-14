@@ -1,3 +1,7 @@
+# =====================================================================
+# Git Ignore for Lossless Video Cutter (PySide6 + FFmpeg)
+# =====================================================================
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -11,9 +15,21 @@ ENV/
 env.bak/
 venv.bak/
 
+# Documentation, README, and AI pair-programming files (Only code in repo)
+*.md
+docs/
+.gemini/
+.system_generated/
+
 # Project caches and logs
 cache/
+logs/
 *.log
+
+# Temporary and scratch folders
+scratch/
+temp/
+tmp/
 
 # Heavy portable binaries (Do not upload 100MB+ executables to GitHub)
 tools/*.exe
@@ -33,7 +49,20 @@ dist/
 *.avi
 *.ts
 *.webm
+*.wav
+*.mp3
+*.aac
+*.m4a
+*.flac
+*.ogg
 output/
+
+# Testing and linting caches
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
 
 # IDE and OS files
 .vscode/
@@ -41,4 +70,3 @@ output/
 .DS_Store
 Thumbs.db
 desktop.ini
-
