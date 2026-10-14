@@ -41,8 +41,13 @@ tools/ffprobe
 build/
 dist/
 *.spec
+*.zip
 
-# Test and temporary media outputs in project root
+# Test and temporary media outputs in project root and test folders
+vid test/
+vid_test/
+test_vid/
+test_videos/
 *.mp4
 *.mkv
 *.mov
