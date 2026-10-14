@@ -22,14 +22,15 @@ def format_timestamp(seconds: float) -> str:
 def find_nearest_keyframe(
     target_sec: float,
     keyframes: list[float],
-    mode: str = "prev",
+    mode: str = "closest",
 ) -> float:
     """Find the nearest keyframe according to mode.
     
     Args:
         target_sec: Target timestamp in seconds.
         keyframes: Sorted list of keyframe timestamps.
-        mode: 'prev' for largest keyframe <= target_sec, 'closest' for minimum delta.
+        mode: 'closest' for minimum delta, 'prev' for largest keyframe <= target_sec,
+              'next' for smallest keyframe >= target_sec.
         
     Returns:
         Snapped timestamp in seconds.
@@ -42,6 +43,12 @@ def find_nearest_keyframe(
         if candidates:
             return max(candidates)
         return keyframes[0]
+
+    if mode == "next":
+        candidates = [k for k in keyframes if k >= target_sec]
+        if candidates:
+            return min(candidates)
+        return keyframes[-1]
 
     # mode == "closest"
     return min(keyframes, key=lambda k: abs(k - target_sec))
@@ -79,6 +86,8 @@ def build_cut_command(
     selected_audio_indices: list[int] | None = None,
     track_ranges: dict[int, tuple[float, float]] | None = None,
     stream_types: dict[int, str] | None = None,
+    cut_mode: str = "global",
+    snap_mode: str = "closest",
 ) -> tuple[list[str], float, float]:
     """Construct FFmpeg stream copy / smart hybrid cut command.
     
@@ -87,12 +96,14 @@ def build_cut_command(
         output_path: Path to destination file.
         start_sec: Desired start time in seconds.
         end_sec: Desired end time in seconds.
-        snap_keyframe: If True, snap start_sec to the nearest previous keyframe.
+        snap_keyframe: If True, snap start_sec to the nearest keyframe.
         keyframes: List of keyframe timestamps.
         selected_stream_indices: List of all stream indices to include (video, audio, etc.).
         selected_audio_indices: Legacy alias for backward compatibility.
         track_ranges: Optional per-stream (in_sec, out_sec) mapping for independent track trimming.
         stream_types: Optional mapping from stream_index to 'video' | 'audio'.
+        cut_mode: 'global' (all tracks synchronous) or 'per_track' (independent track trimming).
+        snap_mode: 'closest' (default) or 'prev'.
         
     Returns:
         tuple of (cmd_list, effective_start_sec, effective_end_sec)
@@ -117,7 +128,7 @@ def build_cut_command(
 
     effective_start = start_sec
     if snap_keyframe and keyframes:
-        effective_start = find_nearest_keyframe(start_sec, keyframes, mode="prev")
+        effective_start = find_nearest_keyframe(start_sec, keyframes, mode=snap_mode)
 
     effective_end = end_sec
     duration = effective_end - effective_start
@@ -137,9 +148,11 @@ def build_cut_command(
             raise ValueError("Vui lòng chọn ít nhất 1 track để xuất!")
         sorted_streams = sorted(set(target_streams))
 
-    # Detect if any audio stream has a range differing from master [effective_start, effective_end]
+    # Detect if any audio stream has a range differing from master [effective_start, effective_end].
+    # Crucial: Only trigger hybrid mode if user is EXPLICITLY in 'per_track' mode!
+    # In 'global' mode, all tracks are 100% synchronous stream copy with zero re-encoding or delay filters.
     is_hybrid = False
-    if track_ranges and sorted_streams:
+    if cut_mode == "per_track" and track_ranges and sorted_streams:
         for s_idx in sorted_streams:
             stype = (
                 stream_types.get(s_idx, "video" if s_idx == 0 else "audio")
@@ -151,6 +164,8 @@ def build_cut_command(
                 if abs(trk_in - effective_start) > 0.05 or abs(trk_out - effective_end) > 0.05:
                     is_hybrid = True
                     break
+
+    cut_dur = max(0.001, effective_end - effective_start)
 
     # Branch 1: Pure Stream Copy (All tracks share the same cut window)
     if not is_hybrid:
@@ -165,17 +180,18 @@ def build_cut_command(
             str(ffmpeg_bin),
             "-y",
             "-ss", f"{effective_start:.4f}",
-            "-to", f"{effective_end:.4f}",
             "-i", str(in_p),
+            "-t", f"{cut_dur:.4f}",
             "-c", "copy",
             *map_args,
             "-avoid_negative_ts", "make_zero",
-            str(out_p),
         ]
+        if out_p.suffix.lower() in (".mp4", ".mov", ".m4v"):
+            cmd.extend(["-movflags", "+faststart"])
+        cmd.append(str(out_p))
         return cmd, effective_start, effective_end
 
     # Branch 2: Smart Hybrid Sync (Video 100% lossless copy, offset audio filtered with adelay + 320k AAC)
-    cut_dur = effective_end - effective_start
     filter_complex_parts: list[str] = []
     map_args: list[str] = []
     codec_args: list[str] = []
@@ -192,6 +208,10 @@ def build_cut_command(
         if stype == "video":
             has_video = True
             map_args.extend(["-map", f"0:{s_idx}"])
+        elif stype == "subtitle":
+            # Subtitle track: Stream copy lossless directly without audio filtering
+            map_args.extend(["-map", f"0:{s_idx}"])
+            codec_args.extend(["-c:s", "copy"])
         else:
             # Audio stream handling
             trk_in, trk_out = track_ranges.get(s_idx, (effective_start, effective_end))
@@ -208,7 +228,7 @@ def build_cut_command(
                 out_label = f"a{s_idx}"
                 filter_complex_parts.append(
                     f"[0:{s_idx}]atrim=start={rel_in:.4f}:end={rel_out:.4f},"
-                    f"asetpts=PTS-STARTPTS,adelay={delay_ms}|{delay_ms}:all=1,apad[{out_label}]"
+                    f"asetpts=PTS-STARTPTS,adelay={delay_ms}:all=1,apad[{out_label}]"
                 )
                 map_args.extend(["-map", f"[{out_label}]"])
                 codec_args.extend([f"-c:a:{audio_out_idx}", "aac", f"-b:a:{audio_out_idx}", "320k"])
@@ -218,8 +238,8 @@ def build_cut_command(
         str(ffmpeg_bin),
         "-y",
         "-ss", f"{effective_start:.4f}",
-        "-to", f"{effective_end:.4f}",
         "-i", str(in_p),
+        "-t", f"{cut_dur:.4f}",
     ]
 
     if filter_complex_parts:
@@ -232,9 +252,10 @@ def build_cut_command(
     cmd.extend(codec_args)
     cmd.extend([
         "-avoid_negative_ts", "make_zero",
-        "-t", f"{cut_dur:.4f}",
-        str(out_p),
     ])
+    if out_p.suffix.lower() in (".mp4", ".mov", ".m4v"):
+        cmd.extend(["-movflags", "+faststart"])
+    cmd.append(str(out_p))
 
     return cmd, effective_start, effective_end
 

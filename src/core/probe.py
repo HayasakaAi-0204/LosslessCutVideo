@@ -4,11 +4,23 @@ Extracts metadata (duration, resolution, fps, streams) and keyframe (I-frame) ti
 """
 
 import json
+import math
 from pathlib import Path
 import subprocess
 from typing import Any
 
 from src.core.config import get_ffprobe_path
+
+
+def safe_float(val: Any, default: float = 0.0) -> float:
+    """Safely convert a value to float, handling 'N/A', None, and invalid formats."""
+    if val is None or val == "N/A" or val == "":
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (ValueError, TypeError):
+        return default
 
 
 def format_bitrate(bitrate_raw: Any) -> str:
@@ -89,6 +101,7 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
                 "type_label": f"Audio #{audio_idx}",
                 "icon": "🔊",
                 "codec_name": codec_name,
+                "codec": codec_name,
                 "details": details,
                 "bitrate": bitrate_str,
                 "title": title,
@@ -103,6 +116,7 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
                 "type_label": f"Subtitle #{sub_idx}",
                 "icon": "💬",
                 "codec_name": codec_name,
+                "codec": codec_name,
                 "details": "Subtitles",
                 "bitrate": bitrate_str,
                 "title": title,
@@ -116,15 +130,18 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
                 "type_label": codec_type.capitalize(),
                 "icon": "📄",
                 "codec_name": codec_name,
+                "codec": codec_name,
                 "details": "",
                 "bitrate": bitrate_str,
                 "title": title,
                 "language": lang,
             })
 
-    duration = float(format_info.get("duration", 0.0))
-    if duration == 0.0 and video_stream:
-        duration = float(video_stream.get("duration", 0.0))
+    duration = safe_float(format_info.get("duration"))
+    if duration <= 0.0 and video_stream:
+        duration = safe_float(video_stream.get("duration"))
+    if duration <= 0.0 and audio_streams:
+        duration = safe_float(audio_streams[0].get("duration"))
 
     fps = 0.0
     width = 0
@@ -144,7 +161,7 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
 
     return {
         "duration": duration,
-        "size": int(format_info.get("size", 0)),
+        "size": int(safe_float(format_info.get("size", 0))),
         "format_name": format_info.get("format_name", ""),
         "video_codec": video_codec,
         "width": width,
@@ -170,7 +187,7 @@ def parse_keyframe_csv(csv_text: str) -> list[float]:
             continue
         # Scan parts to find the first valid non-negative float
         for part in parts:
-            if part in ("N/A", "0/0", "0"):
+            if part in ("N/A", "0/0", "none", "null"):
                 continue
             try:
                 val = float(part)

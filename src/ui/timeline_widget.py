@@ -89,11 +89,17 @@ class TimelineCanvas(QWidget):
         # Real preview data
         self._thumbnails: list[dict[str, Any]] = []  # [{"time_sec": float, "pixmap": QPixmap}]
         self._audio_waveforms: dict[int, list[float]] = {}  # {stream_index: [float]}
+        self._keyframes: list[float] = []
 
         # Drag state: None, 'playhead', 'in', 'out'
         self._drag_mode: str | None = None
 
         self._update_geometry()
+
+    def set_keyframes(self, keyframes: list[float]):
+        """Pass keyframes to canvas for visual ticks and snap aids."""
+        self._keyframes = list(keyframes)
+        self.update()
 
     def set_track_ranges(self, ranges: dict[int, tuple[float, float]]):
         self._track_cut_ranges = dict(ranges)
@@ -108,9 +114,10 @@ class TimelineCanvas(QWidget):
         self.update()
 
     def clear_preview_data(self):
-        """Clear cached thumbnails and waveforms when loading a completely new file."""
+        """Clear cached thumbnails, waveforms, and keyframes when loading a completely new file."""
         self._thumbnails = []
         self._audio_waveforms = {}
+        self._keyframes = []
         self.update()
 
     def set_duration(self, duration_sec: float):
@@ -123,6 +130,9 @@ class TimelineCanvas(QWidget):
         self.update()
 
     def set_position(self, pos_sec: float):
+        if self._drag_mode is not None:
+            # User is actively dragging playhead or in/out markers, do not overwrite with player tick
+            return
         self._current_pos_sec = max(0.0, min(self._duration_sec, pos_sec))
         self.update()
 
@@ -145,7 +155,7 @@ class TimelineCanvas(QWidget):
         self.update()
 
     def set_zoom(self, pps: float):
-        self._pixels_per_sec = max(2.0, min(500.0, pps))
+        self._pixels_per_sec = max(0.05, min(500.0, pps))
         self._update_geometry()
         self.update()
 
@@ -323,17 +333,26 @@ class TimelineCanvas(QWidget):
         elif pps >= 3:
             step = 30.0
             sub_step = 5.0
-        else:
+        elif pps >= 1.0:
             step = 60.0
             sub_step = 10.0
+        elif pps >= 0.3:
+            step = 300.0  # 5 minutes
+            sub_step = 60.0
+        else:
+            step = 600.0  # 10 minutes
+            sub_step = 120.0
 
         font = QFont("Segoe UI", 8)
         painter.setFont(font)
 
-        # Draw tick marks
-        t = 0.0
-        max_t = self._duration_sec + step
-        while t <= max_t:
+        # Culling optimization: Only loop over ticks that fall within the visible [0, width] range
+        start_sec = max(0.0, self._x_to_sec(0) - step)
+        end_sec = min(self._duration_sec + step, self._x_to_sec(width) + step)
+
+        # Align start_sec to the nearest previous multiple of step
+        t = math.floor(start_sec / step) * step
+        while t <= end_sec:
             x = self._sec_to_x(t)
             if 0 <= x <= width:
                 # Major tick
@@ -341,16 +360,20 @@ class TimelineCanvas(QWidget):
                 painter.drawLine(QPointF(x, self.RULER_HEIGHT - 12), QPointF(x, self.RULER_HEIGHT))
 
                 # Time text
-                mins = int(t // 60)
+                hrs = int(t // 3600)
+                mins = int((t % 3600) // 60)
                 secs = int(t % 60)
                 millis = int(round((t - int(t)) * 10))
+
                 if step < 1.0:
                     label = f"{mins:02d}:{secs:02d}.{millis}"
+                elif hrs > 0:
+                    label = f"{hrs:02d}:{mins:02d}:{secs:02d}"
                 else:
                     label = f"{mins:02d}:{secs:02d}"
 
                 painter.setPen(QColor("#abb2bf"))
-                painter.drawText(QRectF(x - 25, 2, 50, 14), Qt.AlignmentFlag.AlignCenter, label)
+                painter.drawText(QRectF(x - 30, 2, 60, 14), Qt.AlignmentFlag.AlignCenter, label)
 
                 # Sub ticks
                 sub_t = t + sub_step
@@ -362,6 +385,16 @@ class TimelineCanvas(QWidget):
                     sub_t += sub_step
 
             t += step
+
+        # Subtle emerald green ticks along bottom of ruler for all Keyframes (I-frames)
+        if self._keyframes:
+            kf_pen = QPen(QColor("#2ecc71"), 1.5)
+            painter.setPen(kf_pen)
+            for kf in self._keyframes:
+                if start_sec <= kf <= end_sec:
+                    kx = self._sec_to_x(kf)
+                    if 0 <= kx <= width:
+                        painter.drawLine(QPointF(kx, self.RULER_HEIGHT - 5), QPointF(kx, self.RULER_HEIGHT))
 
     def _draw_tracks(self, painter: QPainter, width: int):
         tracks = self._tracks
@@ -846,6 +879,7 @@ class TimelineWidget(QWidget):
         self._cut_mode: str = "global"  # "global" or "per_track"
         self._selected_stream_index: int | None = None
         self._track_cut_ranges: dict[int, tuple[float, float]] = {}
+        self._keyframes: list[float] = []
 
         self._setup_ui()
 
@@ -948,7 +982,7 @@ class TimelineWidget(QWidget):
         self.btn_zoom_out.clicked.connect(lambda: self._adjust_zoom(-0.25))
 
         self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
-        self.zoom_slider.setRange(5, 200)
+        self.zoom_slider.setRange(1, 200)
         self.zoom_slider.setValue(40)
         self.zoom_slider.setFixedWidth(90)
         self.zoom_slider.valueChanged.connect(self._on_zoom_slider_changed)
@@ -1092,6 +1126,7 @@ class TimelineWidget(QWidget):
         self.btn_cut_mode.setText("🔗 Cắt đồng bộ")
         self.btn_cut_mode.blockSignals(False)
 
+        self._keyframes = []
         self.canvas.clear_preview_data()
         self.canvas.set_cut_mode("global")
         self.canvas.set_selected_stream(None)
@@ -1137,6 +1172,20 @@ class TimelineWidget(QWidget):
         self.canvas.set_track_ranges(self._track_cut_ranges)
         self._update_time_labels()
 
+    def set_keyframes(self, keyframes: list[float]):
+        """Pass keyframes to timeline widget and canvas for visual display and snapping."""
+        self._keyframes = sorted(keyframes or [])
+        self.canvas.set_keyframes(self._keyframes)
+
+    def snap_to_keyframe(self, target_sec: float, max_delta: float = 3.0) -> float:
+        """Snap timestamp to closest keyframe if snap is enabled and keyframe is within max_delta."""
+        if not self.chk_snap.isChecked() or not self._keyframes:
+            return target_sec
+        closest = min(self._keyframes, key=lambda k: abs(k - target_sec))
+        if abs(closest - target_sec) <= max_delta:
+            return closest
+        return target_sec
+
     def set_video_thumbnails(self, thumbnails: list[dict[str, Any]]):
         """Pass video frame thumbnails to canvas."""
         self.canvas.set_thumbnails(thumbnails)
@@ -1166,9 +1215,9 @@ class TimelineWidget(QWidget):
         avail_w = max(400, self.scroll_area.viewport().width() - 40)
         if self._duration_sec > 0:
             pps = avail_w / self._duration_sec
-            pps = max(5.0, min(200.0, pps))
+            pps = max(0.05, min(200.0, pps))
             self.zoom_slider.blockSignals(True)
-            self.zoom_slider.setValue(int(pps))
+            self.zoom_slider.setValue(max(1, int(round(pps))))
             self.zoom_slider.blockSignals(False)
             self.canvas.set_zoom(pps)
 
@@ -1187,6 +1236,9 @@ class TimelineWidget(QWidget):
         self.seek_requested.emit(pos_ms)
 
     def _on_in_dragged(self, in_sec: float):
+        if self.chk_snap.isChecked() and self._keyframes:
+            in_sec = self.snap_to_keyframe(in_sec, max_delta=0.4)
+
         video_idx = self._get_master_video_stream_index()
         if self._cut_mode == "global":
             self._in_point_sec = in_sec
@@ -1209,6 +1261,9 @@ class TimelineWidget(QWidget):
         self.in_point_changed.emit(self._in_point_sec)
 
     def _on_out_dragged(self, out_sec: float):
+        if self.chk_snap.isChecked() and self._keyframes:
+            out_sec = self.snap_to_keyframe(out_sec, max_delta=0.4)
+
         video_idx = self._get_master_video_stream_index()
         if self._cut_mode == "global":
             self._out_point_sec = out_sec
@@ -1232,6 +1287,12 @@ class TimelineWidget(QWidget):
 
     def _set_in_current(self):
         pos = self._current_pos_sec
+        if self.chk_snap.isChecked() and self._keyframes:
+            pos = self.snap_to_keyframe(pos, max_delta=5.0)
+            self._current_pos_sec = pos
+            self.canvas.set_position(pos)
+            self.seek_requested.emit(int(round(pos * 1000)))
+
         video_idx = self._get_master_video_stream_index()
 
         if self._cut_mode == "global":
@@ -1256,6 +1317,12 @@ class TimelineWidget(QWidget):
 
     def _set_out_current(self):
         pos = self._current_pos_sec
+        if self.chk_snap.isChecked() and self._keyframes:
+            pos = self.snap_to_keyframe(pos, max_delta=5.0)
+            self._current_pos_sec = pos
+            self.canvas.set_position(pos)
+            self.seek_requested.emit(int(round(pos * 1000)))
+
         video_idx = self._get_master_video_stream_index()
 
         if self._cut_mode == "global":
@@ -1309,9 +1376,13 @@ class TimelineWidget(QWidget):
         self.canvas.set_zoom(float(val))
 
     def _adjust_zoom(self, delta_factor: float):
-        cur = self.zoom_slider.value()
-        new_val = int(cur * (1.0 + delta_factor))
-        self.zoom_slider.setValue(max(5, min(200, new_val)))
+        cur_pps = self.canvas.get_pixels_per_sec()
+        new_pps = cur_pps * (1.0 + delta_factor)
+        new_pps = max(0.05, min(200.0, new_pps))
+        self.zoom_slider.blockSignals(True)
+        self.zoom_slider.setValue(max(1, int(round(new_pps))))
+        self.zoom_slider.blockSignals(False)
+        self.canvas.set_zoom(new_pps)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

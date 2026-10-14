@@ -117,6 +117,7 @@ class TestCutter(unittest.TestCase):
             end_sec=40.0,
             selected_stream_indices=[0, 1],
             track_ranges=ranges,
+            cut_mode="per_track",
         )
         self.assertEqual(start, 10.0)
         self.assertEqual(end, 40.0)
@@ -126,8 +127,68 @@ class TestCutter(unittest.TestCase):
         # Check that audio filter with adelay is constructed
         cmd_str = " ".join(cmd)
         self.assertIn("adelay", cmd_str)
-        self.assertIn("5000", cmd_str)
+        self.assertIn("5000:all=1", cmd_str)
         self.assertIn("320k", cmd_str)
+
+    def test_build_cut_command_per_track_hybrid_with_subtitles(self):
+        dummy_in = Path(__file__)
+        dummy_out = Path(__file__).parent / "dummy_out.mp4"
+        # Stream 0: Video, Stream 1: Audio (offset), Stream 2: Subtitle
+        ranges = {0: (10.0, 40.0), 1: (15.0, 30.0), 2: (10.0, 40.0)}
+        types = {0: "video", 1: "audio", 2: "subtitle"}
+        cmd, start, end = build_cut_command(
+            input_path=dummy_in,
+            output_path=dummy_out,
+            start_sec=10.0,
+            end_sec=40.0,
+            selected_stream_indices=[0, 1, 2],
+            track_ranges=ranges,
+            stream_types=types,
+            cut_mode="per_track",
+        )
+        self.assertEqual(start, 10.0)
+        self.assertEqual(end, 40.0)
+        # Check that video is stream-copied
+        self.assertIn("-c:v", cmd)
+        self.assertIn("copy", cmd)
+        # Check that subtitle is stream-copied and not sent to audio filter
+        self.assertIn("-c:s", cmd)
+        self.assertIn("copy", cmd)
+        self.assertIn("0:2", cmd)
+        # Verify subtitle stream 0:2 is not in filter_complex
+        cmd_str = " ".join(cmd)
+        self.assertNotIn("[0:2]atrim", cmd_str)
+
+    def test_build_cut_command_global_cut_never_triggers_hybrid_even_with_snap(self):
+        dummy_in = Path(__file__)
+        dummy_out = Path(__file__).parent / "dummy_out.mp4"
+        # In global cut mode, user sets In at 3.5, but keyframe snaps to 0.0.
+        # track_ranges has (3.5, 10.0) for audio streams.
+        # It must NOT trigger hybrid re-encoding or adelay!
+        ranges = {0: (3.5, 10.0), 1: (3.5, 10.0), 2: (3.5, 10.0)}
+        types = {0: "video", 1: "audio", 2: "audio"}
+        keyframes = [0.0, 5.0, 10.0]
+        cmd, start, end = build_cut_command(
+            input_path=dummy_in,
+            output_path=dummy_out,
+            start_sec=3.5,
+            end_sec=10.0,
+            snap_keyframe=True,
+            keyframes=keyframes,
+            selected_stream_indices=[0, 1, 2],
+            track_ranges=ranges,
+            stream_types=types,
+            cut_mode="global",
+            snap_mode="closest",
+        )
+        # Closest keyframe to 3.5 is 5.0
+        self.assertEqual(start, 5.0)
+        self.assertEqual(end, 10.0)
+        self.assertIn("-c", cmd)
+        self.assertIn("copy", cmd)
+        cmd_str = " ".join(cmd)
+        self.assertNotIn("adelay", cmd_str)
+        self.assertNotIn("-filter_complex", cmd_str)
 
 
     def test_generate_default_output_name(self):

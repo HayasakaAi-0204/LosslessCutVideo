@@ -172,7 +172,7 @@ class KeyframeWorker(QThread):
 class AudioWaveformWorker(QThread):
     """Background worker to extract downsampled real audio waveforms for all audio streams."""
 
-    waveforms_ready = Signal(dict)  # {stream_index: list[float]}
+    waveforms_ready = Signal(object)  # {stream_index: list[float]} - use object to prevent Shiboken C++ dict copy warning
     stream_waveform_ready = Signal(int, list)  # stream_index, list[float]
 
     def __init__(self, video_path: str | Path, audio_streams: list[dict], parent=None):
@@ -322,7 +322,9 @@ class VideoThumbnailWorker(QThread):
         from src.core.config import get_ffmpeg_path, get_project_root
 
         ffmpeg_bin = get_ffmpeg_path()
-        cache_dir = get_project_root() / "cache" / "thumbnails" / self.video_path.stem
+        import hashlib
+        path_hash = hashlib.md5(str(self.video_path.resolve()).encode("utf-8")).hexdigest()[:8]
+        cache_dir = get_project_root() / "cache" / "thumbnails" / f"{self.video_path.stem}_{path_hash}"
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         # 1. Fast path: If high-resolution thumbnails were already generated, load immediately!

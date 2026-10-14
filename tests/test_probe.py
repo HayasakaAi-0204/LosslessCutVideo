@@ -58,6 +58,38 @@ class TestProbe(unittest.TestCase):
         keyframes = parse_keyframe_csv(sample_csv)
         self.assertEqual(keyframes, [0.0, 1.0, 2.5])
 
+    def test_parse_keyframe_csv_zero_entry(self):
+        sample_csv = """0
+1.0000
+2.5000"""
+        keyframes = parse_keyframe_csv(sample_csv)
+        self.assertEqual(keyframes, [0.0, 1.0, 2.5])
+
+    def test_parse_ffprobe_json_na_duration(self):
+        sample_json = """{
+            "format": {
+                "duration": "N/A",
+                "size": "N/A",
+                "format_name": "mpegts"
+            },
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "duration": "N/A"
+                },
+                {
+                    "codec_type": "audio",
+                    "codec_name": "aac",
+                    "duration": "45.200000"
+                }
+            ]
+        }"""
+        info = parse_ffprobe_json(sample_json)
+        # Should fallback to audio stream duration 45.2 without crashing
+        self.assertEqual(info["duration"], 45.2)
+        self.assertEqual(info["size"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

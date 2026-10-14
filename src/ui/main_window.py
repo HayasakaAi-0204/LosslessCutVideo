@@ -330,6 +330,7 @@ class MainWindow(QMainWindow):
         """Callback when background keyframe scan completes."""
         self._keyframes = keyframes
         self.player_widget.set_keyframes(keyframes)
+        self.timeline_widget.set_keyframes(keyframes)
         self.lbl_status.setText(f"Sẵn sàng (Đã nhận diện {len(keyframes)} Keyframes).")
 
         current_info = self.lbl_video_info.text()
@@ -425,6 +426,12 @@ class MainWindow(QMainWindow):
 
         track_ranges = self.timeline_widget.get_track_ranges()
         stream_types = {t.get("stream_index", 0): t.get("codec_type", "video") for t in all_tracks}
+        cut_mode = self.timeline_widget.get_cut_mode()
+
+        # If snap is enabled and keyframe worker is still scanning, wait briefly for it
+        if snap and (not self._keyframes) and self._kf_worker and self._kf_worker.isRunning():
+            self.lbl_status.setText("Đang hoàn tất quét Keyframe để bám chuẩn xác...")
+            self._kf_worker.wait(3000)
 
         try:
             cmd, eff_start, eff_end = build_cut_command(
@@ -437,6 +444,7 @@ class MainWindow(QMainWindow):
                 selected_stream_indices=selected_streams if all_tracks else None,
                 track_ranges=track_ranges,
                 stream_types=stream_types,
+                cut_mode=cut_mode,
             )
         except Exception as e:
             QMessageBox.critical(self, "Lỗi thiết lập lệnh", str(e))
@@ -516,8 +524,14 @@ class MainWindow(QMainWindow):
     def _on_cut_failed(self, error_msg: str):
         self.btn_export.setEnabled(True)
         self.btn_cancel.setEnabled(True)
-        self.lbl_status.setText("Cắt video thất bại.")
-        QMessageBox.critical(self, "Lỗi khi cắt", error_msg)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setValue(0)
+        if "hủy" in error_msg.lower():
+            self.lbl_status.setText("Đã hủy xuất video theo yêu cầu.")
+            QMessageBox.information(self, "Đã hủy xuất video", error_msg)
+        else:
+            self.lbl_status.setText("Cắt video thất bại.")
+            QMessageBox.critical(self, "Lỗi khi cắt", error_msg)
 
     # Drag & Drop Support
     def _enable_global_drag_drop(self):
