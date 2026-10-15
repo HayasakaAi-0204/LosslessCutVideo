@@ -112,10 +112,14 @@ class CutWorker(QThread):
             )
 
             # Read stderr line-by-line
+            stderr_tail: list[str] = []
             if self._process.stderr:
                 for line in self._process.stderr:
                     if self._is_cancelled:
                         break
+                    if len(stderr_tail) >= 10:
+                        stderr_tail.pop(0)
+                    stderr_tail.append(line)
                     pct = parse_ffmpeg_progress(line, self.cut_duration)
                     if pct is not None:
                         self.progress_changed.emit(pct)
@@ -137,7 +141,11 @@ class CutWorker(QThread):
                 self.status_message.emit("Hoàn thành xuất video thành công!")
                 self.finished_success.emit(str(self.output_path))
             else:
-                self.failed.emit(f"FFmpeg kết thúc với lỗi (code {self._process.returncode}).")
+                tail_msg = "".join(stderr_tail).strip()
+                err_msg = f"FFmpeg kết thúc với lỗi (code {self._process.returncode})"
+                if tail_msg:
+                    err_msg += f":\n{tail_msg}"
+                self.failed.emit(err_msg)
 
         except Exception as e:
             self.failed.emit(f"Lỗi khi thực thi: {str(e)}")
@@ -161,7 +169,7 @@ class KeyframeWorker(QThread):
         from src.core.probe import get_keyframe_timestamps
 
         try:
-            keyframes = get_keyframe_timestamps(self.video_path, timeout=30.0)
+            keyframes = get_keyframe_timestamps(self.video_path, timeout=15.0)
             if not self._is_cancelled:
                 self.keyframes_ready.emit(keyframes)
         except Exception as e:
@@ -180,9 +188,15 @@ class AudioWaveformWorker(QThread):
         self.video_path = Path(video_path).resolve()
         self.audio_streams = audio_streams
         self._is_cancelled = False
+        self._process: Optional[subprocess.Popen] = None
 
     def cancel(self):
         self._is_cancelled = True
+        if self._process and self._process.poll() is None:
+            try:
+                self._process.kill()
+            except Exception:
+                pass
 
     def run(self):
         import array
@@ -225,14 +239,14 @@ class AudioWaveformWorker(QThread):
                 ]
 
                 try:
-                    proc = subprocess.Popen(
+                    self._process = subprocess.Popen(
                         cmd,
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         creationflags=creationflags,
                     )
-                    out, err = proc.communicate(timeout=30)
+                    out, err = self._process.communicate(timeout=15)
                     if out and len(out) >= 80:
                         raw_bytes = out
                         break
@@ -240,6 +254,8 @@ class AudioWaveformWorker(QThread):
                     with open(debug_log_path, "a", encoding="utf-8") as log_f:
                         log_f.write(f"Stream {s_idx} map {map_arg} error: {ex}\n")
                     continue
+                finally:
+                    self._process = None
 
             if not raw_bytes or len(raw_bytes) < 80:
                 with open(debug_log_path, "a", encoding="utf-8") as log_f:
@@ -305,111 +321,61 @@ class AudioWaveformWorker(QThread):
 
 
 class VideoThumbnailWorker(QThread):
-    """Background worker to extract video thumbnails for the filmstrip timeline."""
+    """Legacy stub: timeline now uses lightweight vector filmstrip perforations (0% CPU)."""
+    thumbnails_ready = Signal(list)
 
-    thumbnails_ready = Signal(list)  # list of {"time_sec": float, "image_path": str}
+    def cancel(self):
+        pass
 
-    def __init__(self, video_path: str | Path, duration_sec: float, parent=None):
+
+class SnapshotWorker(QThread):
+    """Background worker for extracting a single video frame snapshot without freezing the UI."""
+
+    finished_success = Signal(str, float)  # (output_image_path, time_sec)
+    failed = Signal(str)                   # error_msg
+
+    def __init__(self, cmd: list[str], output_path: str | Path, time_sec: float, parent=None):
         super().__init__(parent)
-        self.video_path = Path(video_path).resolve()
-        self.duration_sec = max(1.0, duration_sec)
+        self.cmd = cmd
+        self.output_path = Path(output_path).resolve()
+        self.time_sec = float(time_sec)
+        self._process: Optional[subprocess.Popen] = None
         self._is_cancelled = False
 
     def cancel(self):
         self._is_cancelled = True
+        if self._process:
+            try:
+                self._process.kill()
+            except Exception:
+                pass
 
     def run(self):
-        from src.core.config import get_ffmpeg_path, get_project_root
-
-        ffmpeg_bin = get_ffmpeg_path()
-        import hashlib
-        path_hash = hashlib.md5(str(self.video_path.resolve()).encode("utf-8")).hexdigest()[:8]
-        cache_dir = get_project_root() / "cache" / "thumbnails" / f"{self.video_path.stem}_{path_hash}"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-
-        # 1. Fast path: If high-resolution thumbnails were already generated, load immediately!
-        existing = sorted(list(cache_dir.glob("thumb_*.jpg")))
-        is_valid_cache = False
-        if len(existing) >= 20:
-            try:
-                # High-res 90px thumbnails with q:v 3 are typically >= 3.5KB (old 80x44 were ~1.5KB)
-                if existing[0].stat().st_size >= 3500:
-                    is_valid_cache = True
-            except Exception:
-                pass
-
-        if is_valid_cache:
-            interval = self.duration_sec / len(existing)
-            results = []
-            for i, f in enumerate(existing):
-                results.append({
-                    "time_sec": i * interval,
-                    "image_path": str(f.resolve()),
-                })
-            if not self._is_cancelled:
-                self.thumbnails_ready.emit(results)
-            return
-
-        # Purge old low-res thumbnails if present
-        for f in existing:
-            try:
-                f.unlink()
-            except Exception:
-                pass
-
-        # 2. Extract high-density, sharp thumbnails (height 90px, scale=-2:90, high quality q:v 3)
-        if self.duration_sec <= 60:
-            thumb_count = min(100, max(30, int(self.duration_sec * 1.5)))
-        elif self.duration_sec <= 300:
-            thumb_count = min(120, max(50, int(self.duration_sec * 0.6)))
-        else:
-            thumb_count = min(150, max(60, int(self.duration_sec / 5.0)))
-
-        fps = thumb_count / self.duration_sec
-        pattern = str(cache_dir / "thumb_%04d.jpg")
-
         creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-
-        cmd = [
-            str(ffmpeg_bin),
-            "-v", "error",
-            "-y",
-            "-threads", "0",
-            "-i", str(self.video_path),
-            "-an", "-sn", "-dn",
-            "-vf", f"fps={fps:.4f},scale=-2:90",
-            "-q:v", "3",
-            pattern,
-        ]
-
         try:
-            proc = subprocess.Popen(
-                cmd,
+            self._process = subprocess.Popen(
+                self.cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 creationflags=creationflags,
             )
-            proc.communicate(timeout=60)
-        except Exception:
-            pass
+            _, stderr = self._process.communicate(timeout=15)
+        except Exception as e:
+            if not self._is_cancelled:
+                self.failed.emit(f"Lỗi khi chụp ảnh: {str(e)}")
+            return
+        finally:
+            self._process = None
 
         if self._is_cancelled:
             return
 
-        thumb_files = sorted(list(cache_dir.glob("thumb_*.jpg")))
-        if not thumb_files:
-            return
+        if self.output_path.is_file() and self.output_path.stat().st_size > 0:
+            self.finished_success.emit(str(self.output_path), self.time_sec)
+        else:
+            err = stderr.decode("utf-8", errors="ignore").strip() if stderr else "Không tạo được file ảnh"
+            self.failed.emit(err)
 
-        interval = self.duration_sec / len(thumb_files)
-        results = []
-        for i, f in enumerate(thumb_files):
-            results.append({
-                "time_sec": i * interval,
-                "image_path": str(f.resolve()),
-            })
-
-        if not self._is_cancelled:
-            self.thumbnails_ready.emit(results)
 
 

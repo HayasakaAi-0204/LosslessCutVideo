@@ -148,6 +148,7 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
     height = 0
     video_codec = ""
 
+    initial_rotation = 0
     if video_stream:
         video_codec = video_stream.get("codec_name", "")
         width = int(video_stream.get("width", 0))
@@ -159,6 +160,23 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
         except Exception:
             fps = 0.0
 
+        # Detect orientation rotation from tags or display matrix
+        v_tags = video_stream.get("tags") or {}
+        rot_val = v_tags.get("rotate")
+        if rot_val is not None:
+            try:
+                initial_rotation = int(float(rot_val)) % 360
+            except Exception:
+                pass
+        if initial_rotation == 0 and "side_data_list" in video_stream:
+            for sd in video_stream.get("side_data_list", []):
+                if "rotation" in sd:
+                    try:
+                        initial_rotation = int(float(sd["rotation"])) % 360
+                        break
+                    except Exception:
+                        pass
+
     return {
         "duration": duration,
         "size": int(safe_float(format_info.get("size", 0))),
@@ -167,6 +185,7 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
         "width": width,
         "height": height,
         "fps": fps,
+        "rotation": initial_rotation,
         "tracks": all_tracks,
         "audio_tracks_count": len(audio_streams),
         "audio_codecs": [a.get("codec_name", "") for a in audio_streams],

@@ -23,14 +23,17 @@ def find_nearest_keyframe(
     target_sec: float,
     keyframes: list[float],
     mode: str = "closest",
+    max_delta: float | None = None,
 ) -> float:
-    """Find the nearest keyframe according to mode.
+    """Find the nearest keyframe according to mode and optional distance constraint.
     
     Args:
         target_sec: Target timestamp in seconds.
         keyframes: Sorted list of keyframe timestamps.
         mode: 'closest' for minimum delta, 'prev' for largest keyframe <= target_sec,
               'next' for smallest keyframe >= target_sec.
+        max_delta: Maximum acceptable distance in seconds. If closest candidate is further
+                   than max_delta, returns target_sec unchanged. None means no limit.
         
     Returns:
         Snapped timestamp in seconds.
@@ -40,18 +43,18 @@ def find_nearest_keyframe(
 
     if mode == "prev":
         candidates = [k for k in keyframes if k <= target_sec]
-        if candidates:
-            return max(candidates)
-        return keyframes[0]
-
-    if mode == "next":
+        cand = max(candidates) if candidates else keyframes[0]
+    elif mode == "next":
         candidates = [k for k in keyframes if k >= target_sec]
-        if candidates:
-            return min(candidates)
-        return keyframes[-1]
+        cand = min(candidates) if candidates else keyframes[-1]
+    else:
+        # mode == "closest"
+        cand = min(keyframes, key=lambda k: abs(k - target_sec))
 
-    # mode == "closest"
-    return min(keyframes, key=lambda k: abs(k - target_sec))
+    if max_delta is not None and abs(cand - target_sec) > max_delta:
+        return target_sec
+
+    return cand
 
 
 def generate_default_output_name(input_path: str | Path, start_sec: float = 0.0, end_sec: float = 0.0) -> Path:
@@ -88,6 +91,8 @@ def build_cut_command(
     stream_types: dict[int, str] | None = None,
     cut_mode: str = "global",
     snap_mode: str = "closest",
+    mix_audio: bool = False,
+    rotation: int | None = None,
 ) -> tuple[list[str], float, float]:
     """Construct FFmpeg stream copy / smart hybrid cut command.
     
@@ -104,6 +109,7 @@ def build_cut_command(
         stream_types: Optional mapping from stream_index to 'video' | 'audio'.
         cut_mode: 'global' (all tracks synchronous) or 'per_track' (independent track trimming).
         snap_mode: 'closest' (default) or 'prev'.
+        mix_audio: If True, merge all selected audio tracks into a single stream via amix.
         
     Returns:
         tuple of (cmd_list, effective_start_sec, effective_end_sec)
@@ -129,6 +135,13 @@ def build_cut_command(
     effective_start = start_sec
     if snap_keyframe and keyframes:
         effective_start = find_nearest_keyframe(start_sec, keyframes, mode=snap_mode)
+        # If snapped start equals or exceeds end_sec, fall back to nearest keyframe strictly before end_sec
+        if effective_start >= end_sec:
+            prev_candidates = [k for k in keyframes if k < end_sec]
+            if prev_candidates:
+                effective_start = max(prev_candidates)
+            else:
+                effective_start = start_sec
 
     effective_end = end_sec
     duration = effective_end - effective_start
@@ -148,91 +161,20 @@ def build_cut_command(
             raise ValueError("Vui lòng chọn ít nhất 1 track để xuất!")
         sorted_streams = sorted(set(target_streams))
 
-    # Detect if any audio stream has a range differing from master [effective_start, effective_end].
-    # Crucial: Only trigger hybrid mode if user is EXPLICITLY in 'per_track' mode!
-    # In 'global' mode, all tracks are 100% synchronous stream copy with zero re-encoding or delay filters.
-    is_hybrid = False
-    if cut_mode == "per_track" and track_ranges and sorted_streams:
-        for s_idx in sorted_streams:
-            stype = (
-                stream_types.get(s_idx, "video" if s_idx == 0 else "audio")
-                if stream_types
-                else ("video" if s_idx == 0 else "audio")
-            )
-            if stype == "audio":
-                trk_in, trk_out = track_ranges.get(s_idx, (effective_start, effective_end))
-                if abs(trk_in - effective_start) > 0.05 or abs(trk_out - effective_end) > 0.05:
-                    is_hybrid = True
-                    break
+    def _get_stype(s_idx: int) -> str:
+        if stream_types and s_idx in stream_types:
+            return stream_types[s_idx]
+        return "video" if s_idx == 0 else "audio"
 
     cut_dur = max(0.001, effective_end - effective_start)
 
-    # Branch 1: Pure Stream Copy (All tracks share the same cut window)
-    if not is_hybrid:
-        map_args: list[str] = []
-        if sorted_streams is None:
-            map_args = ["-map", "0"]
-        else:
-            for s_idx in sorted_streams:
-                map_args.extend(["-map", f"0:{s_idx}"])
-
-        cmd = [
-            str(ffmpeg_bin),
-            "-y",
-            "-ss", f"{effective_start:.4f}",
-            "-i", str(in_p),
-            "-t", f"{cut_dur:.4f}",
-            "-c", "copy",
-            *map_args,
-            "-avoid_negative_ts", "make_zero",
-        ]
-        if out_p.suffix.lower() in (".mp4", ".mov", ".m4v"):
-            cmd.extend(["-movflags", "+faststart"])
-        cmd.append(str(out_p))
-        return cmd, effective_start, effective_end
-
-    # Branch 2: Smart Hybrid Sync (Video 100% lossless copy, offset audio filtered with adelay + 320k AAC)
-    filter_complex_parts: list[str] = []
+    # Pure 100% Lossless Stream Copy: All selected tracks share identical cut window bit-for-bit
     map_args: list[str] = []
-    codec_args: list[str] = []
-
-    audio_out_idx = 0
-    has_video = False
-
-    for s_idx in sorted_streams:
-        stype = (
-            stream_types.get(s_idx, "video" if s_idx == 0 else "audio")
-            if stream_types
-            else ("video" if s_idx == 0 else "audio")
-        )
-        if stype == "video":
-            has_video = True
+    if sorted_streams is None:
+        map_args = ["-map", "0"]
+    else:
+        for s_idx in sorted_streams:
             map_args.extend(["-map", f"0:{s_idx}"])
-        elif stype == "subtitle":
-            # Subtitle track: Stream copy lossless directly without audio filtering
-            map_args.extend(["-map", f"0:{s_idx}"])
-            codec_args.extend(["-c:s", "copy"])
-        else:
-            # Audio stream handling
-            trk_in, trk_out = track_ranges.get(s_idx, (effective_start, effective_end))
-            rel_in = max(0.0, trk_in - effective_start)
-            rel_out = min(cut_dur, max(rel_in + 0.05, trk_out - effective_start))
-
-            # If matches master range precisely, keep stream copy
-            if abs(rel_in) <= 0.05 and abs(rel_out - cut_dur) <= 0.05:
-                map_args.extend(["-map", f"0:{s_idx}"])
-                codec_args.extend([f"-c:a:{audio_out_idx}", "copy"])
-            else:
-                # Insert exact silence delay and pad to prevent desync
-                delay_ms = int(round(rel_in * 1000))
-                out_label = f"a{s_idx}"
-                filter_complex_parts.append(
-                    f"[0:{s_idx}]atrim=start={rel_in:.4f}:end={rel_out:.4f},"
-                    f"asetpts=PTS-STARTPTS,adelay={delay_ms}:all=1,apad[{out_label}]"
-                )
-                map_args.extend(["-map", f"[{out_label}]"])
-                codec_args.extend([f"-c:a:{audio_out_idx}", "aac", f"-b:a:{audio_out_idx}", "320k"])
-            audio_out_idx += 1
 
     cmd = [
         str(ffmpeg_bin),
@@ -240,22 +182,111 @@ def build_cut_command(
         "-ss", f"{effective_start:.4f}",
         "-i", str(in_p),
         "-t", f"{cut_dur:.4f}",
-    ]
-
-    if filter_complex_parts:
-        cmd.extend(["-filter_complex", ";".join(filter_complex_parts)])
-
-    if has_video:
-        cmd.extend(["-c:v", "copy"])
-
-    cmd.extend(map_args)
-    cmd.extend(codec_args)
-    cmd.extend([
+        "-c", "copy",
+        *map_args,
         "-avoid_negative_ts", "make_zero",
-    ])
-    if out_p.suffix.lower() in (".mp4", ".mov", ".m4v"):
+    ]
+    # Add rotation metadata if applicable and video stream is present
+    has_video_out = True
+    if sorted_streams is not None:
+        has_video_out = any(_get_stype(s) == "video" for s in sorted_streams)
+
+    if has_video_out and rotation is not None and out_p.suffix.lower() in (".mp4", ".mov", ".m4v", ".mkv"):
+        rot_val = int(rotation) % 360
+        cmd.extend(["-metadata:s:v:0", f"rotate={rot_val}"])
+
+    if out_p.suffix.lower() in (".mp4", ".mov", ".m4v", ".m4a"):
         cmd.extend(["-movflags", "+faststart"])
     cmd.append(str(out_p))
 
     return cmd, effective_start, effective_end
+
+
+def generate_snapshot_output_name(
+    input_path: str | Path,
+    time_sec: float,
+    extension: str = ".png",
+) -> Path:
+    """Generate a collision-free filename for video frame snapshot.
+    
+    Example: 'MyVideo_snapshot_01m25s340ms.png'
+    """
+    p = Path(input_path).resolve()
+    stem = p.stem
+    total_ms = int(round(max(0.0, float(time_sec)) * 1000))
+    mins = (total_ms // 1000) // 60
+    secs = (total_ms // 1000) % 60
+    ms = total_ms % 1000
+
+    time_tag = f"{mins:02d}m{secs:02d}s{ms:03d}ms"
+    base_name = f"{stem}_snapshot_{time_tag}"
+
+    target_dir = p.parent
+    # Verify write access to source directory, fallback to Pictures if read-only
+    try:
+        test_file = target_dir / f".test_write_{time_tag}.tmp"
+        test_file.touch(exist_ok=True)
+        test_file.unlink(missing_ok=True)
+    except Exception:
+        import os
+        pictures_dir = Path(os.environ.get("USERPROFILE", "")) / "Pictures"
+        if pictures_dir.is_dir():
+            target_dir = pictures_dir
+        else:
+            target_dir = Path.home()
+
+    out_file = target_dir / f"{base_name}{extension}"
+    counter = 1
+    while out_file.exists():
+        out_file = target_dir / f"{base_name}_{counter}{extension}"
+        counter += 1
+
+    return out_file
+
+
+def build_snapshot_command(
+    input_path: str | Path,
+    output_path: str | Path,
+    time_sec: float,
+    rotation: int = 0,
+) -> list[str]:
+    """Construct FFmpeg command to extract a single frame at time_sec with exact frame accuracy and rotation.
+    
+    If time_sec > 5s, fast seeks close to the target frame and fine seeks precisely to avoid full decode.
+    """
+    in_p = Path(input_path).resolve()
+    out_p = Path(output_path).resolve()
+    t = max(0.0, float(time_sec))
+    ffmpeg_bin = get_ffmpeg_path()
+
+    cmd = [
+        str(ffmpeg_bin),
+        "-v", "error",
+        "-y",
+    ]
+    if t > 5.0:
+        pre_seek = t - 3.0
+        cmd.extend(["-ss", f"{pre_seek:.3f}", "-i", str(in_p), "-ss", "3.000"])
+    else:
+        cmd.extend(["-ss", f"{t:.3f}", "-i", str(in_p)])
+
+    vf_filters = []
+    rot_norm = int(rotation) % 360
+    if rot_norm == 90:
+        vf_filters.append("transpose=1")
+    elif rot_norm == 180:
+        vf_filters.append("hflip,vflip")
+    elif rot_norm == 270:
+        vf_filters.append("transpose=2")
+
+    if vf_filters:
+        cmd.extend(["-vf", ",".join(vf_filters)])
+
+    cmd.extend([
+        "-frames:v", "1",
+        "-q:v", "2",
+        str(out_p),
+    ])
+    return cmd
+
 

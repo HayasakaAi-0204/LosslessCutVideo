@@ -13,82 +13,25 @@ from PySide6.QtWidgets import (
     QSlider,
     QLabel,
     QLineEdit,
+    QComboBox,
     QStackedWidget,
     QGridLayout,
 )
 
+SPEED_PRESETS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
 
-class PlayerDropOverlay(QWidget):
-    """Transparent overlay directly covering the video viewport.
-    
-    Guarantees 100% reliable drag & drop on Windows without native HWND interception,
-    provides visual drop guidance, and allows clicking on the video to play/pause.
-    """
+from src.ui.styles import UNIFIED_BUTTON_STYLE, UNIFIED_ICON_BUTTON_STYLE
 
-    file_dropped = Signal(Path)
 
-    def __init__(self, player_widget: "PlayerWidget", parent=None):
-        super().__init__(parent)
-        self.player_widget = player_widget
-        self.setAcceptDrops(True)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self.setStyleSheet("background-color: transparent;")
+class ClickableVideoWidget(QVideoWidget):
+    """QVideoWidget subclass that handles play/pause on mouse click and forwards drag-drop."""
 
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        self.lbl_hint = QLabel("📂 Thả video vào đây để mở ngay", self)
-        self.lbl_hint.setStyleSheet("""
-            QLabel {
-                color: #ffffff;
-                background-color: rgba(0, 132, 255, 220);
-                font-size: 16px;
-                font-weight: bold;
-                padding: 12px 28px;
-                border-radius: 8px;
-                border: 2px dashed #ffffff;
-            }
-        """)
-        self.lbl_hint.hide()
-        layout.addWidget(self.lbl_hint)
+    clicked = Signal()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.player_widget.play_pause()
+            self.clicked.emit()
         super().mousePressEvent(event)
-
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-            self.setStyleSheet("background-color: rgba(0, 132, 255, 35); border: 2px dashed #0084ff;")
-            self.lbl_hint.show()
-
-    def dragMoveEvent(self, event: QDragMoveEvent):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dragLeaveEvent(self, event):
-        self.setStyleSheet("background-color: transparent; border: none;")
-        self.lbl_hint.hide()
-        super().dragLeaveEvent(event)
-
-    def dropEvent(self, event: QDropEvent):
-        self.setStyleSheet("background-color: transparent; border: none;")
-        self.lbl_hint.hide()
-        if event.mimeData().hasUrls():
-            for url in event.mimeData().urls():
-                p_str = url.toLocalFile()
-                if p_str and Path(p_str).is_file():
-                    event.acceptProposedAction()
-                    self.file_dropped.emit(Path(p_str))
-                    return
-                raw_path = url.path()
-                if raw_path.startswith("/") and len(raw_path) > 2 and raw_path[2] == ":":
-                    raw_path = raw_path[1:]
-                if raw_path and Path(raw_path).is_file():
-                    event.acceptProposedAction()
-                    self.file_dropped.emit(Path(raw_path))
-                    return
 
 
 class PlayerWidget(QWidget):
@@ -97,6 +40,9 @@ class PlayerWidget(QWidget):
     position_changed = Signal(int)  # ms
     duration_changed = Signal(int)  # ms
     file_dropped = Signal(Path)
+    speed_changed = Signal(float)  # playback rate e.g. 0.25 .. 2.0
+    snapshot_requested = Signal()
+    rotation_changed = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -106,6 +52,8 @@ class PlayerWidget(QWidget):
         self._out_point_ms: int = 0
         self._pending_first_frame: bool = False
         self._current_speed: float = 1.0
+        self._current_rotation: int = 0
+        self._initial_rotation: int = 0
 
         self._setup_player()
         self._setup_ui()
@@ -118,18 +66,25 @@ class PlayerWidget(QWidget):
         self.player.positionChanged.connect(self._on_position_changed)
         self.player.durationChanged.connect(self._on_duration_changed)
         self.player.mediaStatusChanged.connect(self._on_media_status_changed)
+        self.player.errorOccurred.connect(self._on_player_error)
+
+    def _on_player_error(self, error, error_string):
+        import sys
+        print(f"[Player Error] {error}: {error_string}", file=sys.stderr)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Video viewport stacked container
+        # Video viewport stacked container (styled with solid black background)
         self.viewport_stack = QStackedWidget(self)
         self.viewport_stack.setMinimumSize(480, 270)
+        self.viewport_stack.setStyleSheet("background-color: #000000;")
 
-        # Layer 0: Active Video Output
-        self.video_widget = QVideoWidget(self)
-        self.video_widget.setStyleSheet("background-color: #1e1e1e;")
+        # Layer 0: Active Video Output (NEVER set stylesheet on QVideoWidget directly to avoid solid color overlay)
+        self.video_widget = ClickableVideoWidget(self)
+        self.video_widget.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        self.video_widget.clicked.connect(self.play_pause)
         self.player.setVideoOutput(self.video_widget)
         self.viewport_stack.addWidget(self.video_widget)
 
@@ -159,136 +114,90 @@ class PlayerWidget(QWidget):
         overlay_layout.addWidget(lbl_sub)
         self.viewport_stack.addWidget(self.overlay_disabled)
 
-        # Composite Viewport Container with transparent Drop Overlay on top
-        viewport_container = QWidget(self)
-        v_layout = QGridLayout(viewport_container)
-        v_layout.setContentsMargins(0, 0, 0, 0)
-        v_layout.setSpacing(0)
-        v_layout.addWidget(self.viewport_stack, 0, 0)
-
-        self.drop_overlay = PlayerDropOverlay(self, viewport_container)
-        self.drop_overlay.file_dropped.connect(self.file_dropped.emit)
-        v_layout.addWidget(self.drop_overlay, 0, 0)
-        self.drop_overlay.raise_()
-
-        layout.addWidget(viewport_container, stretch=1)
+        # Mount viewport directly without any obscuring overlay widget
+        layout.addWidget(self.viewport_stack, stretch=1)
 
         # Controls bar
         controls_layout = QHBoxLayout()
 
         self.btn_prev_kf = QPushButton("⏮ Keyframe Trước")
         self.btn_prev_kf.setToolTip("Nhảy lùi về Keyframe (I-frame) gần nhất")
+        self.btn_prev_kf.setStyleSheet(UNIFIED_BUTTON_STYLE)
+        self.btn_prev_kf.setFixedHeight(30)
         self.btn_prev_kf.clicked.connect(lambda: self.step_keyframe(-1))
 
         self.btn_step_back = QPushButton("◀ 1 Frame")
         self.btn_step_back.setToolTip("Lùi 1 khung hình (~0.033s)")
+        self.btn_step_back.setStyleSheet(UNIFIED_BUTTON_STYLE)
+        self.btn_step_back.setFixedHeight(30)
         self.btn_step_back.clicked.connect(lambda: self.step_frame(-1))
 
         self.btn_play_pause = QPushButton("▶ Phát")
-        self.btn_play_pause.setStyleSheet("font-weight: bold; min-width: 80px;")
+        self.btn_play_pause.setStyleSheet(UNIFIED_BUTTON_STYLE + " QPushButton { min-width: 80px; }")
+        self.btn_play_pause.setFixedHeight(30)
         self.btn_play_pause.clicked.connect(self.play_pause)
 
         self.btn_step_forward = QPushButton("1 Frame ▶")
         self.btn_step_forward.setToolTip("Tiến 1 khung hình (~0.033s)")
+        self.btn_step_forward.setStyleSheet(UNIFIED_BUTTON_STYLE)
+        self.btn_step_forward.setFixedHeight(30)
         self.btn_step_forward.clicked.connect(lambda: self.step_frame(1))
 
         self.btn_next_kf = QPushButton("Keyframe Tiếp ⏭")
         self.btn_next_kf.setToolTip("Nhảy tiến tới Keyframe (I-frame) kế tiếp")
+        self.btn_next_kf.setStyleSheet(UNIFIED_BUTTON_STYLE)
+        self.btn_next_kf.setFixedHeight(30)
         self.btn_next_kf.clicked.connect(lambda: self.step_keyframe(1))
 
-        # Playback speed control: [ ➖ ] [ 1.00x ] [ ➕ ] [ 1x ]
+        # Playback speed control: [ ➖ ] [ 1.00x ▾ ] [ ➕ ] (0.25x - 2.00x)
         self.lbl_speed = QLabel("Tốc độ:")
         self.lbl_speed.setStyleSheet("color: #ecf0f1; font-weight: bold; font-size: 13px;")
 
         self.btn_speed_down = QPushButton("➖")
-        self.btn_speed_down.setToolTip("Giảm tốc độ phát (-0.25x hoặc phím [)")
+        self.btn_speed_down.setToolTip("Giảm tốc độ phát (Phím [)")
         self.btn_speed_down.setFixedSize(28, 28)
-        self.btn_speed_down.setStyleSheet("""
-            QPushButton {
-                background-color: #2c313c;
-                color: #ffffff;
-                font-size: 11px;
-                border-radius: 4px;
-                border: 1px solid #3d4452;
-            }
-            QPushButton:hover {
-                background-color: #3d4452;
-                color: #00d2d3;
-                border-color: #00d2d3;
-            }
-        """)
+        self.btn_speed_down.setStyleSheet(UNIFIED_ICON_BUTTON_STYLE)
         self.btn_speed_down.clicked.connect(lambda: self.change_speed(-0.25))
 
-        self.txt_speed = QLineEdit("1.00x")
-        self.txt_speed.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.txt_speed.setToolTip("Nhập tốc độ phát tùy ý (0.10x - 16.00x) hoặc dùng phím [ và ]")
-        self.txt_speed.setFixedWidth(76)
-        self.txt_speed.setFixedHeight(28)
-        self.txt_speed.setStyleSheet("""
-            QLineEdit {
-                background-color: #22262f;
+        self.combo_speed = QComboBox(self)
+        self.combo_speed.setToolTip("Chọn tốc độ phát (0.25x - 2.00x, phím [ / ] hoặc R để đặt về 1x)")
+        for s in SPEED_PRESETS:
+            self.combo_speed.addItem(f"{s:.2f}x")
+        self.combo_speed.setCurrentText("1.00x")
+        self.combo_speed.setFixedHeight(28)
+        self.combo_speed.setFixedWidth(78)
+        self.combo_speed.setStyleSheet("""
+            QComboBox {
+                background-color: #252a34;
                 color: #00d2d3;
-                font-size: 13px;
+                font-size: 12px;
                 font-weight: bold;
-                border: 1px solid #3d4452;
-                border-radius: 4px;
-                padding: 0px;
-                selection-background-color: #0084ff;
-                selection-color: #ffffff;
+                border: 1px solid #3b4252;
+                border-radius: 5px;
+                padding-left: 8px;
             }
-            QLineEdit:hover {
-                border: 1px solid #00d2d3;
-            }
-            QLineEdit:focus {
-                border: 1px solid #00d2d3;
-                background-color: #1a1d24;
-            }
-        """)
-        pal = self.txt_speed.palette()
-        pal.setColor(QPalette.ColorRole.Text, QColor("#00d2d3"))
-        pal.setColor(QPalette.ColorRole.Base, QColor("#22262f"))
-        self.txt_speed.setPalette(pal)
-        self.txt_speed.returnPressed.connect(self._on_speed_text_entered)
-        self.txt_speed.editingFinished.connect(self._on_speed_text_entered)
-
-        self.btn_speed_up = QPushButton("➕")
-        self.btn_speed_up.setToolTip("Tăng tốc độ phát (+0.25x hoặc phím ])")
-        self.btn_speed_up.setFixedSize(28, 28)
-        self.btn_speed_up.setStyleSheet("""
-            QPushButton {
-                background-color: #2c313c;
-                color: #ffffff;
-                font-size: 11px;
-                border-radius: 4px;
-                border: 1px solid #3d4452;
-            }
-            QPushButton:hover {
-                background-color: #3d4452;
-                color: #00d2d3;
+            QComboBox:hover {
                 border-color: #00d2d3;
             }
-        """)
-        self.btn_speed_up.clicked.connect(lambda: self.change_speed(0.25))
-
-        self.btn_reset_speed = QPushButton("1x")
-        self.btn_reset_speed.setToolTip("Đặt lại tốc độ về 1.0x (Phím R)")
-        self.btn_reset_speed.setFixedSize(36, 28)
-        self.btn_reset_speed.setStyleSheet("""
-            QPushButton {
-                background-color: #2c313c;
+            QComboBox::drop-down {
+                border: none;
+                width: 18px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #252a34;
                 color: #ffffff;
-                font-weight: bold;
-                font-size: 12px;
-                border-radius: 4px;
-                border: 1px solid #3d4452;
-            }
-            QPushButton:hover {
-                background-color: #3d4452;
-                color: #00d2d3;
-                border: 1px solid #00d2d3;
+                selection-background-color: #0084ff;
+                selection-color: #ffffff;
+                border: 1px solid #3b4252;
             }
         """)
-        self.btn_reset_speed.clicked.connect(self.reset_speed)
+        self.combo_speed.currentTextChanged.connect(self._on_combo_speed_changed)
+
+        self.btn_speed_up = QPushButton("➕")
+        self.btn_speed_up.setToolTip("Tăng tốc độ phát (Phím ])")
+        self.btn_speed_up.setFixedSize(28, 28)
+        self.btn_speed_up.setStyleSheet(UNIFIED_ICON_BUTTON_STYLE)
+        self.btn_speed_up.clicked.connect(lambda: self.change_speed(0.25))
 
         # Volume control
         self.lbl_vol = QLabel("🔊")
@@ -298,31 +207,74 @@ class PlayerWidget(QWidget):
         self.slider_vol.setMaximumWidth(80)
         self.slider_vol.valueChanged.connect(self._on_volume_changed)
 
+        # Snapshot button (Save current frame in 100% native resolution)
+        self.btn_snapshot = QPushButton("📸 Chụp Ảnh")
+        self.btn_snapshot.setToolTip("Chụp ảnh khung hình hiện tại ở độ phân giải gốc (Phím tắt C)")
+        self.btn_snapshot.setEnabled(False)
+        self.btn_snapshot.setStyleSheet(UNIFIED_BUTTON_STYLE)
+        self.btn_snapshot.setFixedHeight(30)
+        self.btn_snapshot.clicked.connect(self.snapshot_requested.emit)
+
+        # Rotate button (Lossless metadata orientation cycle: 0 -> 90 -> 180 -> 270)
+        self.btn_rotate = QPushButton("⟳ Xoay: 0°")
+        self.btn_rotate.setToolTip("Xoay hướng hiển thị video theo chiều kim đồng hồ 90° (Áp dụng khi xuất file & chụp ảnh, phím tắt Ctrl+R)")
+        self.btn_rotate.setEnabled(False)
+        self.btn_rotate.setStyleSheet(UNIFIED_BUTTON_STYLE)
+        self.btn_rotate.setFixedHeight(30)
+        self.btn_rotate.clicked.connect(self.rotate_90)
+
         controls_layout.addWidget(self.btn_prev_kf)
         controls_layout.addWidget(self.btn_step_back)
         controls_layout.addWidget(self.btn_play_pause)
         controls_layout.addWidget(self.btn_step_forward)
         controls_layout.addWidget(self.btn_next_kf)
+        controls_layout.addSpacing(6)
+        controls_layout.addWidget(self.btn_snapshot)
+        controls_layout.addWidget(self.btn_rotate)
         controls_layout.addStretch()
         controls_layout.addWidget(self.lbl_speed)
         controls_layout.addWidget(self.btn_speed_down)
-        controls_layout.addWidget(self.txt_speed)
+        controls_layout.addWidget(self.combo_speed)
         controls_layout.addWidget(self.btn_speed_up)
-        controls_layout.addWidget(self.btn_reset_speed)
         controls_layout.addSpacing(10)
         controls_layout.addWidget(self.lbl_vol)
         controls_layout.addWidget(self.slider_vol)
 
         layout.addLayout(controls_layout)
 
+    def rotate_90(self):
+        """Rotate clockwise by 90 degrees."""
+        self._current_rotation = (self._current_rotation + 90) % 360
+        self._update_rotate_button_ui()
+        self.rotation_changed.emit(self._current_rotation)
+
+    def set_initial_rotation(self, rot: int):
+        """Set initial rotation probed from file metadata."""
+        self._initial_rotation = int(rot) % 360
+        self._current_rotation = self._initial_rotation
+        self._update_rotate_button_ui()
+
+    def get_rotation(self) -> int:
+        return self._current_rotation
+
+    def _update_rotate_button_ui(self):
+        rot = self._current_rotation % 360
+        if rot == 0:
+            self.btn_rotate.setText("⟳ Xoay: 0°")
+        else:
+            self.btn_rotate.setText(f"⟳ Xoay: {rot}°")
+
     def load_video(self, file_path: str | Path, keyframes: list[float] | None = None, fps: float = 30.0):
         """Load video into media player and pre-roll first frame."""
         self._keyframes = sorted(keyframes or [])
         self._fps = fps if (fps and fps > 0) else 30.0
         self.set_video_enabled(True)
+        self.btn_snapshot.setEnabled(True)
+        self.btn_rotate.setEnabled(True)
         self._pending_first_frame = True
         url = QUrl.fromLocalFile(str(Path(file_path).resolve()))
         self.player.setSource(url)
+        self.player.setPosition(0)
         self.player.pause()
         self.btn_play_pause.setText("▶ Phát")
 
@@ -334,19 +286,39 @@ class PlayerWidget(QWidget):
         self._keyframes = []
         self._in_point_ms = 0
         self._out_point_ms = 0
+        self._current_rotation = 0
+        self._initial_rotation = 0
         self.btn_play_pause.setText("▶ Phát")
+        self.btn_snapshot.setEnabled(False)
+        self.btn_rotate.setEnabled(False)
+        self.btn_rotate.setText("⟳ Xoay: 0°")
         self.set_video_enabled(True)
 
     def set_video_enabled(self, enabled: bool):
         """Show or hide video preview when Video track is toggled."""
+        self._video_enabled = enabled
         if enabled:
             self.viewport_stack.setCurrentIndex(0)
             self.player.setVideoOutput(self.video_widget)
+            has_media = bool(self.player.source() and not self.player.source().isEmpty())
+            if hasattr(self, "btn_snapshot"):
+                self.btn_snapshot.setEnabled(has_media)
+                self.btn_snapshot.setToolTip("Chụp ảnh khung hình hiện tại ở độ phân giải gốc (Phím tắt C)")
+            if hasattr(self, "btn_rotate"):
+                self.btn_rotate.setEnabled(has_media)
+                self.btn_rotate.setToolTip("Xoay hướng hiển thị video theo chiều kim đồng hồ 90° (Áp dụng khi xuất file & chụp ảnh)")
         else:
             self.viewport_stack.setCurrentIndex(1)
             self.player.setVideoOutput(None)
-        if hasattr(self, "drop_overlay"):
-            self.drop_overlay.raise_()
+            if hasattr(self, "btn_snapshot"):
+                self.btn_snapshot.setEnabled(False)
+                self.btn_snapshot.setToolTip("Không có hình ảnh để chụp (Track video đang bị tắt)")
+            if hasattr(self, "btn_rotate"):
+                self.btn_rotate.setEnabled(False)
+                self.btn_rotate.setToolTip("Không thể xoay khi tắt track video")
+
+    def is_video_enabled(self) -> bool:
+        return getattr(self, "_video_enabled", True)
 
     def update_active_tracks(self, active_stream_indices: list[int], all_tracks: list[dict]):
         """Sync player preview with active/disabled tracks from timeline."""
@@ -370,6 +342,19 @@ class PlayerWidget(QWidget):
                 except Exception:
                     pass
 
+    def set_active_audio_stream(self, stream_index: int, all_tracks: list[dict]):
+        """Switch player preview audio to selected track if it is an audio stream."""
+        audio_streams = [t for t in all_tracks if t.get("codec_type") == "audio"]
+        if not audio_streams:
+            return
+        target = next((t for t in audio_streams if t.get("stream_index") == stream_index), None)
+        if target:
+            audio_idx = audio_streams.index(target)
+            try:
+                self.player.setActiveAudioTrack(audio_idx)
+            except Exception:
+                pass
+
     def set_cut_range(self, in_sec: float, out_sec: float):
         """Set preview boundaries so playback respects In/Out cut points."""
         self._in_point_ms = int(in_sec * 1000)
@@ -385,16 +370,17 @@ class PlayerWidget(QWidget):
             self._fps = fps
 
     def play_pause(self):
-        """Toggle playback state, respecting In/Out bounds."""
-        if not self.player.source().isValid() or self.player.duration() <= 0:
+        """Toggle playback state."""
+        if not self.player.source().isValid():
             return
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
             self.btn_play_pause.setText("▶ Phát")
         else:
-            # If at or past out point, restart from in point
-            if self._out_point_ms > self._in_point_ms and self.player.position() >= self._out_point_ms:
-                self.seek(self._in_point_ms)
+            # If at the very end of the video, restart from beginning
+            dur_ms = self.player.duration()
+            if dur_ms > 0 and self.player.position() >= dur_ms:
+                self.seek(0)
             self.player.play()
             self.btn_play_pause.setText("⏸ Tạm dừng")
 
@@ -433,14 +419,10 @@ class PlayerWidget(QWidget):
                 self.seek(int(min(candidates) * 1000))
 
     def _on_position_changed(self, pos_ms: int):
-        # Stop at Out point during preview playback
-        if (
-            self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
-            and self._out_point_ms > self._in_point_ms
-            and pos_ms >= self._out_point_ms
-        ):
+        # Stop at the end of the entire video
+        dur_ms = self.player.duration()
+        if dur_ms > 0 and pos_ms >= dur_ms:
             self.player.pause()
-            self.seek(self._out_point_ms)
             self.btn_play_pause.setText("▶ Phát")
         self.position_changed.emit(pos_ms)
 
@@ -449,8 +431,9 @@ class PlayerWidget(QWidget):
         if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
             if self._pending_first_frame:
                 self._pending_first_frame = False
-                self.player.pause()
                 self.player.setPosition(0)
+                self.player.pause()
+                self.video_widget.update()
                 self.btn_play_pause.setText("▶ Phát")
 
     def _on_duration_changed(self, dur_ms: int):
@@ -464,25 +447,38 @@ class PlayerWidget(QWidget):
     def _on_volume_changed(self, val: int):
         self.audio_output.setVolume(val / 100.0)
 
-    def _on_speed_text_entered(self):
-        """Parse text input when user finishes typing a custom playback speed."""
-        raw = self.txt_speed.text().strip().rstrip("xX").strip().replace(",", ".")
+    def _on_combo_speed_changed(self, text: str):
+        """Handle speed selection from combo box."""
+        raw = text.rstrip("xX").strip().replace(",", ".")
         try:
             val = float(raw)
             self.set_speed(val)
         except ValueError:
-            self.txt_speed.setText(f"{self._current_speed:.2f}x")
+            pass
 
     def set_speed(self, speed: float):
-        """Set playback speed and update UI label & media player."""
-        clamped = max(0.1, min(16.0, round(speed, 2)))
+        """Set playback speed clamped between 0.25x and 2.0x."""
+        clamped = max(0.25, min(2.0, round(speed, 2)))
         self._current_speed = clamped
-        self.txt_speed.setText(f"{clamped:.2f}x")
+        text = f"{clamped:.2f}x"
+        idx = self.combo_speed.findText(text)
+        if idx >= 0 and self.combo_speed.currentIndex() != idx:
+            self.combo_speed.blockSignals(True)
+            self.combo_speed.setCurrentIndex(idx)
+            self.combo_speed.blockSignals(False)
         self.player.setPlaybackRate(clamped)
+        self.speed_changed.emit(clamped)
 
     def change_speed(self, delta: float):
-        """Increase or decrease playback speed by delta."""
-        self.set_speed(self._current_speed + delta)
+        """Step to next or previous speed preset in [0.25x .. 2.0x]."""
+        curr = self._current_speed
+        if delta > 0:
+            candidates = [s for s in SPEED_PRESETS if s > curr + 0.01]
+            target = candidates[0] if candidates else SPEED_PRESETS[-1]
+        else:
+            candidates = [s for s in SPEED_PRESETS if s < curr - 0.01]
+            target = candidates[-1] if candidates else SPEED_PRESETS[0]
+        self.set_speed(target)
 
     def reset_speed(self):
         """Reset speed to 1.0x."""
@@ -499,6 +495,18 @@ class PlayerWidget(QWidget):
             def setValue(self, val):
                 self._parent.set_speed(float(val))
         return _CompatSpeed(self)
+
+    @property
+    def txt_speed(self):
+        """Backward compatibility helper for any callers querying txt_speed."""
+        class _CompatTxt:
+            def __init__(self, parent):
+                self._parent = parent
+            def text(self):
+                return self._parent.combo_speed.currentText()
+            def setText(self, val):
+                self._parent.combo_speed.setCurrentText(str(val))
+        return _CompatTxt(self)
 
     # --- Drag & Drop Support ---
     def eventFilter(self, watched, event):

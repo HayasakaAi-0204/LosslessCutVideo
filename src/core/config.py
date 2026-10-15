@@ -78,3 +78,32 @@ def validate_tools() -> dict[str, bool]:
         "ffprobe": ffprobe_p.is_file(),
     }
 
+
+def get_assets_dir() -> Path:
+    """Return path to assets directory containing app icon and media resources."""
+    if hasattr(sys, "_MEIPASS"):
+        meipass_assets = Path(sys._MEIPASS) / "assets"
+        if meipass_assets.is_dir():
+            return meipass_assets
+    assets_dir = get_project_root() / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    return assets_dir
+
+
+def get_app_icon_path() -> Path:
+    """Return path to app icon (.ico or .png)."""
+    from src.core.icon_utils import ensure_app_icons
+
+    ico_path, png_path = ensure_app_icons()
+    if sys.platform == "win32" and ico_path and ico_path.is_file():
+        return ico_path
+    if png_path and png_path.is_file():
+        return png_path
+
+    assets = get_assets_dir()
+    for ext in (".ico", ".png"):
+        p = assets / f"icon{ext}"
+        if p.is_file():
+            return p
+    return assets / "icon.png"
+
