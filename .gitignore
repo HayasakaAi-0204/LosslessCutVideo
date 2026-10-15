@@ -1,5 +1,5 @@
 # =====================================================================
-# Git Ignore for Lossless Video Cutter (PySide6 + FFmpeg)
+# Git Ignore - Only Code Required to Run the Application
 # =====================================================================
 
 # --- Python & Bytecode ---
@@ -15,27 +15,39 @@ ENV/
 env.bak/
 venv.bak/
 
-# --- Packaging & Distribution ---
-build/
-dist/
-*.spec
-*.egg-info/
-*.egg
-*.whl
-*.zip
-*.7z
-*.tar.gz
-
-# --- Heavy Portable Binaries (Never commit 100MB+ binaries to Git) ---
-tools/*
-!tools/.gitkeep
+# --- Documentation, Readmes, Reports & Assignment Files ---
+*.md
+*.pdf
+*.docx
+*.doc
+*.pptx
+*.ppt
+*.xlsx
+*.xls
+docs/
+.superpowers/
 
 # --- AI & Private Workspace Files ---
 GEMINI.md
 .gemini/
 .system_generated/
-*.tmp
 scratch/
+*.tmp
+
+# --- Packaging & Build Scripts (Not required to run source code) ---
+build/
+dist/
+*.spec
+*.zip
+*.7z
+*.tar.gz
+build_exe.bat
+build_portable.py
+package_app.py
+
+# --- Heavy Portable Binaries (FFmpeg/FFprobe binaries) ---
+tools/*
+!tools/.gitkeep
 
 # --- Logs, Temporary & Cache Files ---
 logs/
@@ -45,13 +57,14 @@ temp/
 tmp/
 
 # --- Testing & Code Quality Caches ---
+tests/
 .pytest_cache/
 .coverage
 htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# --- User Media, Test Outputs & Exports (Never upload user videos to Git) ---
+# --- User Media, Test Outputs & Exports ---
 *.mp4
 *.mkv
 *.mov
@@ -76,10 +89,13 @@ test_videos/
 *_snapshot_*.png
 *.snapshot.png
 
-# --- Keep Essential Project Assets & Documentation ---
+# --- Keep Application Code & Runtime Assets ---
+!requirements.txt
+!main.py
+!src/
 !assets/
 !assets/*
-!README.md
+!tools/.gitkeep
 
 # --- OS & IDE Specific Files ---
 .vscode/
