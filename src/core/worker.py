@@ -1,8 +1,9 @@
-"""Background worker for executing FFmpeg cut jobs asynchronously.
+"""Các tiến trình ngầm (Worker Threads) thực thi tác vụ FFmpeg bất đồng bộ.
 
-Keeps the UI responsive and reports real-time progress.
+Giữ giao diện người dùng luôn phản hồi mượt mà và báo cáo tiến độ thời gian thực.
 """
 
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -12,7 +13,7 @@ from typing import Optional
 try:
     from PySide6.QtCore import QThread, Signal
 except ImportError:
-    # Minimal fallback for environments before PySide6 installation
+    # Lớp dự phòng tối thiểu khi chưa cài đặt PySide6
     class QThread:  # type: ignore
         def __init__(self, parent=None):
             pass
@@ -29,7 +30,7 @@ except ImportError:
 
 
 def parse_time_to_seconds(time_str: str) -> float:
-    """Convert FFmpeg time format (HH:MM:SS.ms) into total seconds."""
+    """Chuyển đổi định dạng thời gian của FFmpeg (HH:MM:SS.ms) thành tổng số giây."""
     match = re.search(r"(\d+):(\d+):(\d+\.?\d*)", time_str)
     if not match:
         return 0.0
@@ -40,10 +41,10 @@ def parse_time_to_seconds(time_str: str) -> float:
 
 
 def parse_ffmpeg_progress(stderr_line: str, total_duration: float) -> Optional[float]:
-    """Parse percentage completed from FFmpeg stderr line.
+    """Bóc tách phần trăm tiến độ hoàn thành từ luồng stderr của FFmpeg.
     
-    Looks for pattern: time=HH:MM:SS.ms
-    Returns percentage (0.0 to 100.0) or None if no time match.
+    Tìm kiếm mẫu chuỗi: time=HH:MM:SS.ms
+    Trả về tỷ lệ phần trăm (0.0 đến 100.0) hoặc None nếu không khớp.
     """
     if total_duration <= 0.0:
         return None
@@ -58,7 +59,7 @@ def parse_ffmpeg_progress(stderr_line: str, total_duration: float) -> Optional[f
 
 
 class CutWorker(QThread):
-    """QThread worker to execute FFmpeg cut command without blocking UI."""
+    """Luồng QThread ngầm thực thi lệnh cắt video FFmpeg mà không làm treo giao diện UI."""
 
     progress_changed = Signal(float)
     status_message = Signal(str)
@@ -80,7 +81,7 @@ class CutWorker(QThread):
         self._is_cancelled = False
 
     def cancel(self):
-        """Cancel ongoing cut job and clean up incomplete file."""
+        """Hủy tác vụ cắt đang chạy và dọn dẹp file xuất dở dang."""
         self._is_cancelled = True
         if self._process and self._process.poll() is None:
             try:
@@ -89,13 +90,13 @@ class CutWorker(QThread):
                 pass
 
     def run(self):
-        """Execute FFmpeg in background and parse stderr progress."""
+        """Thực thi tiến trình FFmpeg ngầm và cập nhật tiến độ qua stderr."""
         self._is_cancelled = False
         self.status_message.emit("Bắt đầu xử lý Stream Copy...")
         self.progress_changed.emit(0.0)
 
         try:
-            # Creationflags to prevent command prompt window popping up on Windows
+            # Ẩn cửa sổ dòng lệnh cmd trên hệ điều hành Windows
             creationflags = 0
             if sys.platform == "win32":
                 creationflags = subprocess.CREATE_NO_WINDOW
@@ -111,7 +112,7 @@ class CutWorker(QThread):
                 creationflags=creationflags,
             )
 
-            # Read stderr line-by-line
+            # Đọc từng dòng thông báo tiến độ từ stderr
             stderr_tail: list[str] = []
             if self._process.stderr:
                 for line in self._process.stderr:
@@ -127,7 +128,7 @@ class CutWorker(QThread):
             self._process.wait()
 
             if self._is_cancelled:
-                # Clean up incomplete file
+                # Xóa file dở dang nếu người dùng bấm Hủy
                 if self.output_path.exists():
                     try:
                         self.output_path.unlink()
@@ -152,7 +153,7 @@ class CutWorker(QThread):
 
 
 class KeyframeWorker(QThread):
-    """Background worker to scan video keyframes without blocking the UI thread."""
+    """Luồng QThread quét danh sách Keyframe video ngầm mà không gây đơ giao diện."""
 
     keyframes_ready = Signal(list)
     scan_failed = Signal(str)
@@ -178,9 +179,9 @@ class KeyframeWorker(QThread):
 
 
 class AudioWaveformWorker(QThread):
-    """Background worker to extract downsampled real audio waveforms for all audio streams."""
+    """Luồng QThread trích xuất và chuẩn hóa sóng âm thanh thực tế cho toàn bộ các audio stream."""
 
-    waveforms_ready = Signal(object)  # {stream_index: list[float]} - use object to prevent Shiboken C++ dict copy warning
+    waveforms_ready = Signal(object)  # {stream_index: list[float]} - dùng object để tránh cảnh báo sao chép Shiboken C++ dict
     stream_waveform_ready = Signal(int, list)  # stream_index, list[float]
 
     def __init__(self, video_path: str | Path, audio_streams: list[dict], parent=None):
@@ -211,7 +212,7 @@ class AudioWaveformWorker(QThread):
         debug_log_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(debug_log_path, "a", encoding="utf-8") as log_f:
-            log_f.write(f"\n--- Waveform extraction started for {self.video_path.name} ({len(self.audio_streams)} audio streams) ---\n")
+            log_f.write(f"\n--- Bắt đầu trích xuất sóng âm cho {self.video_path.name} ({len(self.audio_streams)} audio streams) ---\n")
 
         for idx, stream in enumerate(self.audio_streams):
             if self._is_cancelled:
@@ -219,13 +220,13 @@ class AudioWaveformWorker(QThread):
 
             s_idx = stream.get("stream_index", idx)
 
-            # Try primary map 0:{s_idx}, fallback to 0:a:{idx} if needed
+            # Thử ánh xạ 0:{s_idx}, dự phòng sang 0:a:{idx} nếu cần
             raw_bytes = b""
             for map_arg in [f"0:{s_idx}", f"0:a:{idx}"]:
                 if self._is_cancelled:
                     return
 
-                # -vn -sn -dn guarantees FFmpeg decodes only audio, finishing in <200ms
+                # Cờ -vn -sn -dn đảm bảo FFmpeg chỉ giải mã audio cực nhanh (<200ms)
                 cmd = [
                     str(ffmpeg_bin),
                     "-v", "error",
@@ -252,24 +253,24 @@ class AudioWaveformWorker(QThread):
                         break
                 except Exception as ex:
                     with open(debug_log_path, "a", encoding="utf-8") as log_f:
-                        log_f.write(f"Stream {s_idx} map {map_arg} error: {ex}\n")
+                        log_f.write(f"Lỗi Stream {s_idx} map {map_arg}: {ex}\n")
                     continue
                 finally:
                     self._process = None
 
             if not raw_bytes or len(raw_bytes) < 80:
                 with open(debug_log_path, "a", encoding="utf-8") as log_f:
-                    log_f.write(f"Stream {s_idx}: No audio data extracted.\n")
+                    log_f.write(f"Stream {s_idx}: Không trích xuất được dữ liệu audio.\n")
                 continue
 
-            # Convert 16-bit PCM bytes via C-level array (blazing fast, no overhead)
+            # Chuyển đổi byte PCM 16-bit qua array cấp độ C (tốc độ siêu nhanh, không tốn RAM)
             pcm = array.array("h")
-            # Ensure even number of bytes
+            # Đảm bảo số lượng byte chẵn
             pcm.frombytes(raw_bytes[: len(raw_bytes) - (len(raw_bytes) % 2)])
             num_samples = len(pcm)
 
-            # 40 samples at 8000 Hz = 5ms per peak (200 peaks/second)
-            # Keyboard click transients (10-25ms) are captured with pinpoint precision
+            # 40 mẫu tại 8000 Hz = 5ms mỗi đỉnh peak (200 peaks/giây)
+            # Giúp bắt trọn chính xác các âm thanh gõ phím ngắn (10-25ms)
             window = 40
             raw_peaks: list[float] = []
             for i in range(0, num_samples, window):
@@ -277,16 +278,16 @@ class AudioWaveformWorker(QThread):
                 m = max(abs(x) for x in chunk) / 32768.0
                 raw_peaks.append(m)
 
-            # --- Adaptive Click-Contrast Normalization ---
-            # Separate ambient room noise floor from sharp keyboard click transients
+            # --- Chuẩn hóa độ tương phản thích ứng (Adaptive Contrast Normalization) ---
+            # Tách biệt tiếng ồn phòng xung quanh khỏi các âm thanh gõ phím sắc nét
             non_silent = [p for p in raw_peaks if p > 0.002]
             if non_silent and len(non_silent) > 20:
                 sorted_peaks = sorted(non_silent)
-                # Ambient noise floor (15th percentile of non-silent signal)
+                # Ngưỡng sàn tiếng ồn (phân vị thứ 15 của tín hiệu không im lặng)
                 noise_floor = sorted_peaks[int(len(sorted_peaks) * 0.15)]
-                noise_floor = min(0.04, noise_floor)  # Cap noise floor
+                noise_floor = min(0.04, noise_floor)
 
-                # Reference peak: 98th percentile prevents 1 single loud thump from squashing clicks
+                # Đỉnh tham chiếu: phân vị 98 giúp ngăn chặn 1 tiếng nổ to lấn át toàn bộ đỉnh nhỏ
                 p98 = sorted_peaks[int(len(sorted_peaks) * 0.98)]
                 p_max = sorted_peaks[-1]
                 p_ref = max(0.015, max(p98, p_max * 0.70))
@@ -298,7 +299,7 @@ class AudioWaveformWorker(QThread):
                         scaled_peaks.append(0.0)
                     else:
                         ratio = min(1.0, max(0.0, (p - noise_floor) / denom))
-                        # Power 0.55 makes light taps & clicks stand out tall and crisp (30%-95% height)
+                        # Lũy thừa 0.55 giúp các âm gõ nhẹ nổi bật rõ ràng (chiều cao 30%-95%)
                         val = math.pow(ratio, 0.55) * 0.95
                         scaled_peaks.append(round(min(1.0, val), 4))
             else:
@@ -311,7 +312,7 @@ class AudioWaveformWorker(QThread):
 
             waveforms[s_idx] = scaled_peaks
             with open(debug_log_path, "a", encoding="utf-8") as log_f:
-                log_f.write(f"Stream {s_idx} success: {len(scaled_peaks)} peaks generated. Emitting stream waveform.\n")
+                log_f.write(f"Stream {s_idx} thành công: {len(scaled_peaks)} peaks. Phát tín hiệu stream waveform.\n")
 
             if not self._is_cancelled:
                 self.stream_waveform_ready.emit(s_idx, scaled_peaks)
@@ -321,7 +322,7 @@ class AudioWaveformWorker(QThread):
 
 
 class VideoThumbnailWorker(QThread):
-    """Legacy stub: timeline now uses lightweight vector filmstrip perforations (0% CPU)."""
+    """Lớp giữ tương thích: Timeline hiện đã sử dụng dải cuộn phim vector siêu nhẹ (0% CPU)."""
     thumbnails_ready = Signal(list)
 
     def cancel(self):
@@ -329,10 +330,10 @@ class VideoThumbnailWorker(QThread):
 
 
 class SnapshotWorker(QThread):
-    """Background worker for extracting a single video frame snapshot without freezing the UI."""
+    """Luồng QThread trích xuất ảnh chụp khung hình video ở độ phân giải gốc mà không làm đơ giao diện."""
 
-    finished_success = Signal(str, float)  # (output_image_path, time_sec)
-    failed = Signal(str)                   # error_msg
+    finished_success = Signal(str, float)  # (đường_dẫn_ảnh, mốc_thời_gian_giây)
+    failed = Signal(str)                   # thông_báo_lỗi
 
     def __init__(self, cmd: list[str], output_path: str | Path, time_sec: float, parent=None):
         super().__init__(parent)

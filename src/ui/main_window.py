@@ -1,11 +1,11 @@
-"""Main application window for Lossless Video Cutter.
+"""Cửa sổ ứng dụng chính cho Lossless Video Cutter.
 
-CapCut-inspired layout:
-- Top bar: Open video, video specs, and prominent Blue Export button.
-- Center: High-FPS responsive video player with custom preview speed controls.
-- Bottom: Full-featured Multi-Track Timeline with visual lanes, time ruler, waveforms, and track toggles.
-- Save flow: Clicking "⚡ Xuất Video" opens native Windows Save As dialog at original folder with real-time timestamp.
-- Default maximized window state.
+Bố cục lấy cảm hứng từ CapCut:
+- Thanh trên cùng: Mở video, thông số kỹ thuật video và nút Xuất Video màu xanh dương nổi bật.
+- Khu vực trung tâm: Trình phát video phản hồi nhanh, FPS cao với các tùy chọn tốc độ phát tùy chỉnh.
+- Khu vực dưới cùng: Timeline đa track đầy đủ tính năng với các lane trực quan, thước đo thời gian, dạng sóng và công tắc bật/tắt track.
+- Luồng lưu tệp: Nhấp "⚡ Xuất Video" mở hộp thoại Lưu tệp chuẩn của Windows tại thư mục gốc kèm dấu thời gian thời gian thực.
+- Mặc định mở ở trạng thái phóng to tối đa màn hình.
 """
 
 from datetime import datetime
@@ -54,7 +54,7 @@ from src.ui.styles import (
 
 
 class ToolDownloaderWorker(QThread):
-    """Background worker to download and unpack portable FFmpeg & FFprobe."""
+    """Tiến trình ngầm để tải và giải nén FFmpeg & FFprobe portable."""
 
     progress_changed = Signal(int, str)
     finished_result = Signal(bool, str)
@@ -83,7 +83,7 @@ class ToolDownloaderWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-    """Main Application Window."""
+    """Cửa sổ ứng dụng chính."""
 
     def __init__(self):
         super().__init__()
@@ -112,7 +112,7 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._check_environment()
 
-        # Start maximized by default
+        # Mặc định mở ở trạng thái phóng to tối đa màn hình
         self.showMaximized()
 
     def _setup_ui(self):
@@ -124,7 +124,7 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(6)
 
         # ---------------------------------------------------------------------
-        # 1. Top Bar: Open File + Info + Blue Export Button
+        # 1. Thanh trên cùng: Mở file + Thông tin + Nút Xuất Video xanh dương
         # ---------------------------------------------------------------------
         top_bar = QFrame()
         top_bar.setAcceptDrops(True)
@@ -139,7 +139,7 @@ class MainWindow(QMainWindow):
         top_layout.setContentsMargins(10, 6, 10, 6)
         top_layout.setSpacing(12)
 
-        # Left: Open File Button & Video metadata
+        # Bên trái: Nút mở file & Thông tin video
         self.btn_open_file = QPushButton("📁 Mở Video...")
         self.btn_open_file.setStyleSheet(UNIFIED_BUTTON_STYLE)
         self.btn_open_file.setFixedHeight(32)
@@ -151,7 +151,7 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self.btn_open_file)
         top_layout.addWidget(self.lbl_video_info, stretch=1)
 
-        # Right: CapCut Blue Export Button & Cancel / Close Video Button
+        # Bên phải: Nút Xuất Video xanh dương phong cách CapCut & Nút Hủy / Đóng video
         self.btn_export = QPushButton("⚡ Xuất Video")
         self.btn_export.setStyleSheet(BUTTON_EXPORT_STYLE)
         self.btn_export.setFixedHeight(32)
@@ -171,20 +171,20 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(top_bar)
 
         # ---------------------------------------------------------------------
-        # 2. Player Viewport
+        # 2. Khung nhìn phát video
         # ---------------------------------------------------------------------
         self.player_widget = PlayerWidget(self)
         self.player_widget.file_dropped.connect(self._load_video)
         main_layout.addWidget(self.player_widget, stretch=1)
 
         # ---------------------------------------------------------------------
-        # 3. CapCut Multi-Track Timeline
+        # 3. Timeline đa track phong cách CapCut
         # ---------------------------------------------------------------------
         self.timeline_widget = TimelineWidget(self)
         self.timeline_widget.setAcceptDrops(True)
         main_layout.addWidget(self.timeline_widget)
 
-        # Connect Player & Timeline
+        # Kết nối Trình phát & Timeline
         self.player_widget.position_changed.connect(self.timeline_widget.set_position)
         self.player_widget.duration_changed.connect(self.timeline_widget.set_duration)
         self.timeline_widget.seek_requested.connect(self.player_widget.seek)
@@ -201,7 +201,7 @@ class MainWindow(QMainWindow):
         self.player_widget.rotation_changed.connect(self._on_rotation_changed)
 
         # ---------------------------------------------------------------------
-        # 4. Sleek Bottom Status Bar & Progress
+        # 4. Thanh trạng thái tinh gọn & Tiến trình ở đáy
         # ---------------------------------------------------------------------
         status_bar = QFrame()
         status_bar.setStyleSheet("background-color: #1a1d24; border-radius: 4px; padding: 2px;")
@@ -235,7 +235,7 @@ class MainWindow(QMainWindow):
         status_layout.addWidget(self.progress_bar)
         main_layout.addWidget(status_bar)
 
-        # Enable drag-and-drop globally across all widgets in the window
+        # Bật tính năng kéo thả tệp toàn cục trên toàn bộ widget trong cửa sổ
         self._enable_global_drag_drop()
 
     def _check_environment(self):
@@ -325,7 +325,7 @@ class MainWindow(QMainWindow):
         self.timeline_widget.clear_preview_data()
 
         try:
-            # 1. Fast metadata probe (instant < 50ms)
+            # 1. Phân tích siêu dữ liệu nhanh (tức thì < 50ms)
             self._video_info = probe_video_info(self._current_video_path)
             self._keyframes = []
 
@@ -342,12 +342,12 @@ class MainWindow(QMainWindow):
             )
             self.lbl_video_info.setText(info_str)
 
-            # 2. Load tracks into CapCut Multi-Track Timeline
+            # 2. Nạp các track vào Timeline đa track CapCut
             self.timeline_widget.set_tracks(tracks)
             self.timeline_widget.set_duration(int(dur_sec * 1000))
 
-            # 3. Load video into player viewport and initialize preview boundaries
-            self.player_widget.load_video(self._current_video_path, self._keyframes, fps=fps)
+            # 3. Nạp video vào khung nhìn trình phát và khởi tạo phạm vi xem trước
+            self.player_widget.load_video(self._current_video_path, self._keyframes, fps=fps, codec=codec)
             self.player_widget.set_cut_range(0.0, dur_sec)
             init_rot = int(self._video_info.get("rotation", 0))
             self.player_widget.set_initial_rotation(init_rot)
@@ -358,15 +358,15 @@ class MainWindow(QMainWindow):
 
             self.lbl_status.setText("Đã nạp video. Đang quét Keyframe trong nền...")
 
-            # 4. Asynchronously scan keyframes and audio waveforms in background (zero lag, no thumbnail decode)
+            # 4. Quét keyframe và dạng sóng âm thanh không đồng bộ trong nền (không giật lag, không decode ảnh thu nhỏ)
             self._start_keyframe_scan()
             self._start_audio_waveform_scan()
 
-            # 5. Enable Export and Cancel/Close buttons
+            # 5. Kích hoạt nút Xuất và nút Hủy/Đóng
             self.btn_export.setEnabled(True)
             self.btn_cancel.setEnabled(True)
 
-            # Re-apply global drag-drop recursively to newly added track widgets
+            # Áp dụng lại tính năng kéo thả đệ quy cho các widget track mới thêm vào
             self._enable_global_drag_drop()
 
         except Exception as e:
@@ -374,11 +374,11 @@ class MainWindow(QMainWindow):
             self.lbl_status.setText("Lỗi khi nạp video.")
 
     def _on_timeline_tracks_changed(self, active_indices: list[int]):
-        """Callback when user toggles Giữ/Bỏ on any track on the timeline."""
+        """Hàm phản hồi khi người dùng chuyển đổi Giữ/Bỏ trên bất kỳ track nào trên timeline."""
         all_tracks = self._video_info.get("tracks", [])
         self.player_widget.update_active_tracks(active_indices, all_tracks)
 
-        # Dynamic Button Text: Switch between "⚡ Xuất Video" and "🎵 Xuất Âm Thanh"
+        # Đổi nhãn nút động: Chuyển đổi giữa "⚡ Xuất Video" và "🎵 Xuất Âm Thanh"
         video_streams = [t for t in all_tracks if t.get("codec_type") == "video"]
         has_video = any(t.get("stream_index") in active_indices for t in video_streams) if video_streams else True
         if not has_video and any(t.get("codec_type") == "audio" and t.get("stream_index") in active_indices for t in all_tracks):
@@ -387,12 +387,12 @@ class MainWindow(QMainWindow):
             self.btn_export.setText("⚡ Xuất Video")
 
     def _on_timeline_track_selected(self, stream_index: int):
-        """Callback when user clicks/selects a track on the timeline."""
+        """Hàm phản hồi khi người dùng nhấp/chọn một track trên timeline."""
         all_tracks = self._video_info.get("tracks", [])
         self.player_widget.set_active_audio_stream(stream_index, all_tracks)
 
     def _start_keyframe_scan(self):
-        """Scan keyframes in a separate QThread to keep UI fully responsive."""
+        """Quét keyframe trong một QThread riêng để giữ giao diện hoàn toàn mượt mà."""
         if self._kf_worker and self._kf_worker.isRunning():
             self._kf_worker.cancel()
             self._kf_worker.wait()
@@ -402,7 +402,7 @@ class MainWindow(QMainWindow):
         self._kf_worker.start()
 
     def _on_keyframes_loaded(self, keyframes: list[float]):
-        """Callback when background keyframe scan completes."""
+        """Hàm phản hồi khi tiến trình quét keyframe ngầm hoàn tất."""
         self._keyframes = keyframes
         self.player_widget.set_keyframes(keyframes)
         self.timeline_widget.set_keyframes(keyframes)
@@ -413,7 +413,7 @@ class MainWindow(QMainWindow):
             self.lbl_video_info.setText(f"{current_info} | Keyframes: {len(keyframes)}")
 
     def _start_audio_waveform_scan(self):
-        """Extract real audio waveforms for all audio streams in background."""
+        """Trích xuất dạng sóng âm thanh thực tế cho tất cả các luồng âm thanh trong nền."""
         if self._audio_worker and self._audio_worker.isRunning():
             self._audio_worker.cancel()
             self._audio_worker.wait()
@@ -426,15 +426,14 @@ class MainWindow(QMainWindow):
             self._audio_worker.start()
 
     def closeEvent(self, event):
-        """Ensure all background worker threads are cancelled and media player detached when window is closed."""
-        # 1. Safely stop player and detach Direct3D video surface to prevent GPU driver hang on exit
+        """Đảm bảo tất cả các luồng worker ngầm bị hủy và giải phóng tài nguyên player an toàn khi đóng cửa sổ."""
+        # 1. Dừng và giải phóng an toàn backend player (mpv C threads hoặc Qt Direct3D surface)
         try:
-            self.player_widget.clear_video()
-            self.player_widget.player.setVideoOutput(None)
+            self.player_widget.cleanup()
         except Exception:
             pass
 
-        # 2. Cancel all active background workers
+        # 2. Hủy toàn bộ các worker đang chạy ngầm
         for w in [self._worker, self._kf_worker, self._audio_worker, self._tool_worker, self._snapshot_worker]:
             if w and w.isRunning():
                 w.cancel()
@@ -464,7 +463,7 @@ class MainWindow(QMainWindow):
         has_video = any(t.get("codec_type") == "video" for t in selected_tracks) if all_tracks else True
         selected_audio = [t for t in selected_tracks if t.get("codec_type") == "audio"]
 
-        # If only audio tracks are selected (no video), audio can cut exactly without video keyframe snapping
+        # Nếu chỉ chọn các track âm thanh (không có video), âm thanh có thể cắt chính xác mà không cần bám keyframe video
         if not has_video:
             snap = False
 
@@ -483,6 +482,12 @@ class MainWindow(QMainWindow):
                 out_sec = next_kfs[0] if next_kfs else self.timeline_widget.get_duration()
             self.timeline_widget.set_in_point(in_sec)
             self.timeline_widget.set_out_point(out_sec)
+
+        if out_sec <= in_sec:
+            dur_total = self._video_info.get("duration", 0.0)
+            if dur_total > in_sec:
+                out_sec = dur_total
+                self.timeline_widget.set_out_point(out_sec)
 
         if out_sec <= in_sec:
             QMessageBox.warning(self, "Lỗi mốc thời gian", "Điểm kết thúc (Out) phải lớn hơn điểm bắt đầu (In).")
@@ -577,7 +582,7 @@ class MainWindow(QMainWindow):
 
         cut_duration = eff_end - eff_start
 
-        # UI state during cutting
+        # Trạng thái giao diện trong quá trình cắt
         self.btn_export.setEnabled(False)
         self.btn_cancel.setEnabled(True)
         self.progress_bar.setVisible(True)
@@ -594,34 +599,34 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
     def _close_current_video(self):
-        """Unload current video, stop playback, cancel workers, and reset UI back to clean initial state."""
-        # 1. Cancel any active background workers
+        """Gỡ bỏ video hiện tại, dừng phát, hủy các worker và đặt lại giao diện về ban đầu."""
+        # 1. Hủy mọi worker ngầm đang hoạt động
         for w in [self._worker, self._kf_worker, self._audio_worker, self._snapshot_worker]:
             if w and w.isRunning():
                 w.cancel()
                 w.wait(200)
 
-        # 2. Reset video info & keyframes
+        # 2. Đặt lại thông tin video & keyframe
         self._current_video_path = None
         self._video_info = {}
         self._keyframes = []
 
-        # 3. Reset UI labels & status
+        # 3. Đặt lại các nhãn & trạng thái giao diện
         self.lbl_video_info.setText("Chưa chọn video (Kéo thả video vào bất kỳ đâu hoặc bấm 'Mở Video')")
         self.lbl_status.setText("Sẵn sàng.")
         self.progress_bar.setVisible(False)
         self.progress_bar.setValue(0)
 
-        # 4. Disable Export and Cancel buttons, reset button label
+        # 4. Vô hiệu hóa nút Xuất và Hủy, đặt lại nhãn nút
         self.btn_export.setText("⚡ Xuất Video")
         self.btn_export.setEnabled(False)
         self.btn_cancel.setEnabled(False)
 
-        # 5. Clear player viewport and timeline
+        # 5. Xóa sạch khung nhìn player và timeline
         self.player_widget.clear_video()
         self.timeline_widget.clear_timeline()
 
-        # 6. Re-ensure drag & drop is active everywhere
+        # 6. Đảm bảo tính năng kéo & thả vẫn kích hoạt ở mọi nơi
         self._enable_global_drag_drop()
 
     def _on_cut_success(self, output_path: str):
@@ -658,7 +663,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Lỗi khi cắt", error_msg)
 
     def _take_snapshot(self):
-        """Extract current video frame snapshot at native resolution using FFmpeg."""
+        """Trích xuất ảnh chụp khung hình video hiện tại ở độ phân giải gốc bằng FFmpeg."""
         if not self._current_video_path:
             return
 
@@ -709,9 +714,9 @@ class MainWindow(QMainWindow):
     def _on_snapshot_failed(self, error_msg: str):
         self.lbl_status.setText(f"Lỗi khi chụp ảnh: {error_msg}")
 
-    # Drag & Drop Support
+    # Hỗ trợ Kéo & Thả
     def _enable_global_drag_drop(self):
-        """Recursively enable drag and drop across MainWindow and all child widgets."""
+        """Kích hoạt đệ quy tính năng kéo và thả trên MainWindow và toàn bộ widget con."""
         self.setAcceptDrops(True)
         for w in self.findChildren(QWidget):
             w.setAcceptDrops(True)
@@ -724,7 +729,7 @@ class MainWindow(QMainWindow):
         video_exts = {".mp4", ".mkv", ".mov", ".avi", ".ts", ".webm", ".flv", ".m4v", ".wmv", ".m4a", ".mp3", ".wav"}
         valid_files = []
 
-        # 1. Check QUrl items
+        # 1. Kiểm tra các mục QUrl
         if mime_data.hasUrls():
             for url in mime_data.urls():
                 candidate_paths = []
@@ -752,7 +757,7 @@ class MainWindow(QMainWindow):
                     except Exception:
                         pass
 
-        # 2. Check plain text fallback (e.g. copied file paths from Explorer)
+        # 2. Kiểm tra văn bản thuần dự phòng (ví dụ đường dẫn copy từ Explorer)
         if mime_data.hasText():
             text = mime_data.text().strip().strip('"').strip("'")
             for line in text.splitlines():
@@ -817,7 +822,7 @@ class MainWindow(QMainWindow):
             self._last_drop_time = now
             self._load_video(file_path)
 
-    # Keyboard Shortcuts
+    # Phím tắt bàn phím
     def keyPressEvent(self, event: QKeyEvent):
         key = event.key()
         if key == Qt.Key.Key_Space:

@@ -1,2 +1,2 @@
-"""UI components for CutVideo application."""
+"""Các thành phần giao diện người dùng (UI) cho ứng dụng CutVideo."""
 

@@ -1,26 +1,65 @@
-"""Entry point for Lossless Video Cutter application."""
+"""Điểm khởi chạy ứng dụng Lossless Video Cutter."""
 
 from datetime import datetime
 import os
 from pathlib import Path
 import sys
 
-# Ensure project root is in sys.path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Đảm bảo thư mục gốc dự án luôn nằm trong sys.path
+if getattr(sys, "frozen", False):
+    PROJECT_ROOT = Path(sys.executable).resolve().parent
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-def apply_system_stability_protections():
-    """Apply stability protections and configure optimal multimedia backends.
+def setup_mpv_dll_directory():
+    """Cấu hình Windows DLL Loader để nạp mpv-2.dll từ thư mục tools/ hoặc các thư mục dự án."""
+    candidates = [
+        PROJECT_ROOT / "tools",
+        PROJECT_ROOT,
+    ]
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.extend([
+            exe_dir / "tools",
+            exe_dir / "_internal",
+            exe_dir,
+        ])
+    for d in candidates:
+        if d.is_dir():
+            d_str = str(d.resolve())
+            if hasattr(os, "add_dll_directory"):
+                try:
+                    os.add_dll_directory(d_str)
+                except Exception:
+                    pass
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    ctypes.windll.kernel32.AddDllDirectory(d_str)
+                    ctypes.windll.kernel32.SetDllDirectoryW(d_str)
+                except Exception:
+                    pass
+            cur_path = os.environ.get("PATH", "")
+            if d_str not in cur_path:
+                os.environ["PATH"] = d_str + os.pathsep + cur_path
 
-    1. Disables third-party overlay injection hooks (NVIDIA ShadowPlay, Discord,
-       RTSS, OBS) to prevent DirectX swapchain hooking crashes and TDR resets.
-    2. Enforces QT_MEDIA_BACKEND=ffmpeg so PySide6 QMediaPlayer can natively decode
-       all modern formats (AV1, HEVC, VP9, H.264, AAC, Opus, etc.) without relying on
-       Windows Media Foundation (WMF) which fails on AV1/MKV with error 0x80004001.
+
+def apply_system_stability_protections():
+    """Áp dụng các biện pháp bảo vệ ổn định hệ thống và cấu hình backend đa phương tiện tối ưu.
+
+    1. Vô hiệu hóa các hook chèn overlay từ bên thứ ba (NVIDIA ShadowPlay, Discord,
+       RTSS, OBS) nhằm ngăn ngừa sự cố xung đột swapchain DirectX và lỗi TDR reset.
+    2. Cấu hình Windows DLL loader để nhận diện mpv-2.dll trong thư mục tools/ và các thư mục liên quan.
+    3. Thiết lập QT_MEDIA_BACKEND=ffmpeg làm backend dự phòng an toàn khi thiếu thư viện mpv.
     """
-    # 1. Environment flags to disable third-party hooks and overlays cooperatively
+    # 1. Cấu hình đường dẫn nạp thư viện DLL cho mpv
+    setup_mpv_dll_directory()
+
+    # 2. Thiết lập biến môi trường vô hiệu hóa hook và overlay từ phần mềm bên thứ ba
     overlay_env_vars = {
         "NV_DISABLE_OVERLAY": "1",
         "DISABLE_NV_OVERLAY": "1",
@@ -36,15 +75,68 @@ def apply_system_stability_protections():
         if k not in os.environ:
             os.environ[k] = v
 
-    # Always enforce FFmpeg backend for Qt 6 Multimedia to support AV1, HEVC, VP9, etc.
+    # Luôn ép Qt 6 Multimedia sử dụng backend FFmpeg để hỗ trợ giải mã đa định dạng (AV1, HEVC, VP9...)
     os.environ["QT_MEDIA_BACKEND"] = "ffmpeg"
 
-    # Disable buggy D3D11VA/DXVA2 GPU hardware surface mapping in Qt 6 FFmpeg backend.
-    # Forces Qt to use FFmpeg's robust multi-threaded software decoder (libdav1d),
-    # eliminating the black screen bug on AV1/HEVC videos across all GPUs.
-    os.environ["QT_FFMPEG_DECODING_HW_DEVICE_TYPES"] = ""
+    # 2. Tự động định vị đường dẫn Qt Plugins và thư viện DLL khi chạy dưới dạng file đóng gói .exe (PyInstaller)
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        internal_pyside = exe_dir / "_internal" / "PySide6"
+        internal_dir = exe_dir / "_internal"
 
-    # 2. Set Windows AppUserModelID for taskbar pinning and identity isolation
+        # Sử dụng Win32 Kernel32 API để nạp trực tiếp đường dẫn DLL vào Windows DLL Loader
+        if sys.platform == "win32":
+            import ctypes
+            for d in [internal_pyside, internal_dir, exe_dir]:
+                if d.is_dir():
+                    try:
+                        ctypes.windll.kernel32.AddDllDirectory(str(d))
+                    except Exception:
+                        pass
+                    if hasattr(os, "add_dll_directory"):
+                        try:
+                            os.add_dll_directory(str(d))
+                        except Exception:
+                            pass
+            if internal_pyside.is_dir():
+                try:
+                    ctypes.windll.kernel32.SetDllDirectoryW(str(internal_pyside))
+                except Exception:
+                    pass
+
+        candidates = []
+        if hasattr(sys, "_MEIPASS"):
+            meipass = Path(sys._MEIPASS)
+            candidates.extend([
+                meipass / "PySide6" / "plugins",
+                meipass / "_internal" / "PySide6" / "plugins",
+                meipass / "plugins",
+            ])
+        candidates.extend([
+            exe_dir / "plugins",
+            exe_dir / "_internal" / "PySide6" / "plugins",
+            exe_dir / "PySide6" / "plugins",
+            exe_dir / "_internal" / "plugins",
+        ])
+
+        found_primary = False
+        for p_dir in candidates:
+            if p_dir.is_dir():
+                if not found_primary:
+                    os.environ["QT_PLUGIN_PATH"] = str(p_dir)
+                    found_primary = True
+                try:
+                    from PySide6.QtCore import QCoreApplication
+                    QCoreApplication.addLibraryPath(str(p_dir))
+                except Exception:
+                    pass
+                pyside_dir = p_dir.parent
+                if pyside_dir.is_dir():
+                    cur_path = os.environ.get("PATH", "")
+                    if str(pyside_dir) not in cur_path:
+                        os.environ["PATH"] = str(pyside_dir) + os.pathsep + cur_path
+
+    # 3. Đặt Windows AppUserModelID để ghim taskbar và đồng bộ danh tính icon ứng dụng
     if sys.platform == "win32":
         try:
             import ctypes
@@ -57,7 +149,7 @@ def apply_system_stability_protections():
 
 
 def setup_exception_handler():
-    """Set up global unhandled exception handler to log errors gracefully."""
+    """Thiết lập bộ bắt ngoại lệ toàn cục để ghi log lỗi hệ thống ổn định."""
 
     def handle_exception(exc_type, exc_value, exc_traceback):
         if issubclass(exc_type, KeyboardInterrupt):
@@ -79,7 +171,7 @@ def setup_exception_handler():
     sys.excepthook = handle_exception
 
 
-# Apply stability protections before any GUI or graphics modules are loaded
+# Áp dụng các biện pháp bảo vệ ổn định hệ thống trước khi nạp module đồ họa GUI
 apply_system_stability_protections()
 setup_exception_handler()
 
@@ -92,7 +184,7 @@ def main():
     app.setApplicationName("Lossless Video Cutter")
     app.setOrganizationName("Antigravity")
 
-    # Set application icon (affects taskbar, window title, dialogs)
+    # Cài đặt biểu tượng ứng dụng (áp dụng cho taskbar, thanh tiêu đề và hộp thoại)
     from src.core.config import get_app_icon_path
     from PySide6.QtGui import QIcon
 

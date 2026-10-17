@@ -1,8 +1,8 @@
-"""Icon management and generation utility for Lossless Video Cutter.
+"""Tiện ích tạo và quản lý biểu tượng (icon) cho ứng dụng Lossless Video Cutter.
 
-Extracts Concept 2 dark squircle tile from the light mockup background,
-applies antialiased transparent rounded corners, and compiles multi-resolution
-standard Windows .ico and high-res .png formats.
+Tự động trích xuất khối squircle bo góc tối màu từ ảnh thiết kế gốc,
+khử răng cưa viền bo góc trong suốt, và đóng gói chuẩn file .ico đa độ phân giải cho Windows
+cùng định dạng ảnh .png sắc nét.
 """
 
 import io
@@ -19,16 +19,15 @@ SOURCE_IMAGE_HINTS = [
 
 
 def qimage_to_ico_dib(qimg) -> bytes:
-    """Convert a QImage to standard Win32 ICO DIB (BITMAPINFOHEADER + BGRA + AND mask).
+    """Chuyển đổi QImage thành cấu trúc Win32 ICO DIB chuẩn (BITMAPINFOHEADER + BGRA + AND mask).
     
-    This matches Microsoft's standard icon resource format for <=128x128 sizes,
-    guaranteeing 100% compatibility with Windows Explorer, GDI, and PyInstaller.
+    Tương thích 100% với định dạng tài nguyên icon của Windows Explorer, GDI và PyInstaller.
     """
     from PySide6.QtGui import QImage
     w = qimg.width()
     h = qimg.height()
     converted = qimg.convertToFormat(QImage.Format.Format_ARGB32)
-    # BITMAPINFOHEADER (40 bytes): biHeight is h * 2 (XOR mask + AND mask)
+    # BITMAPINFOHEADER (40 bytes): biHeight gấp đôi h (XOR mask + AND mask)
     bih = struct.pack("<IIIHHIIIIII", 40, w, h * 2, 1, 32, 0, w * h * 4, 0, 0, 0, 0)
 
     xor_bytes = bytearray()
@@ -48,7 +47,7 @@ def qimage_to_ico_dib(qimg) -> bytes:
 
 
 def create_ico_from_pngs(png_data_list: list[tuple[int, bytes]]) -> bytes:
-    """Create a multi-resolution Windows .ico binary from a list of (size, data_bytes)."""
+    """Tạo dữ liệu nhị phân Windows .ico đa kích thước từ danh sách (kích_thước, dữ_liệu_bytes)."""
     count = len(png_data_list)
     header = struct.pack("<HHH", 0, 1, count)
 
@@ -80,7 +79,7 @@ def create_ico_from_pngs(png_data_list: list[tuple[int, bytes]]) -> bytes:
 
 
 def extract_transparent_squircle_qimage(src_file: Path) -> Optional[tuple[bytes, bytes]]:
-    """Crop dark squircle tile, strip light background, and apply smooth transparent corners using PySide6."""
+    """Cắt khối squircle bo góc, xóa phông nền sáng và tạo nền trong suốt mượt mà bằng PySide6."""
     try:
         from PySide6.QtGui import QImage, QPainter, QPainterPath
         from PySide6.QtCore import Qt, QBuffer, QIODevice
@@ -100,7 +99,7 @@ def extract_transparent_squircle_qimage(src_file: Path) -> Optional[tuple[bytes,
     min_x, max_x = w, 0
     min_y, max_y = h, 0
 
-    # Scan to detect bounding box of dark squircle
+    # Quét để phát hiện khung viền (bounding box) của khối squircle tối
     step = 2
     for y in range(0, h, step):
         for x in range(0, w, step):
@@ -123,7 +122,7 @@ def extract_transparent_squircle_qimage(src_file: Path) -> Optional[tuple[bytes,
         min_y = int(h * 0.22)
         max_y = int(h * 0.78)
 
-    # Inset 4px to eliminate any edge shadow gradient
+    # Thu vào trong 4px để loại bỏ hoàn toàn viền đổ bóng mờ
     min_x += 4
     max_x -= 4
     min_y += 4
@@ -137,7 +136,7 @@ def extract_transparent_squircle_qimage(src_file: Path) -> Optional[tuple[bytes,
 
     cropped = qimg.copy(crop_x, crop_y, side, side)
 
-    # 512x512 with 100% transparent corners
+    # Khởi tạo canvas 512x512 với 4 góc trong suốt 100%
     target_side = 512
     result = QImage(target_side, target_side, QImage.Format.Format_ARGB32_Premultiplied)
     result.fill(Qt.GlobalColor.transparent)
@@ -160,7 +159,7 @@ def extract_transparent_squircle_qimage(src_file: Path) -> Optional[tuple[bytes,
     png_bytes = bytes(png_buf.data())
     png_buf.close()
 
-    # 1. First priority: If Pillow is installed, let Pillow create standard multi-res ICO
+    # 1. Ưu tiên hàng đầu: Nếu có thư viện Pillow, dùng Pillow để đóng gói file ICO đa kích thước chuẩn
     try:
         from PIL import Image
         pil_img = Image.open(io.BytesIO(png_bytes))
@@ -171,7 +170,7 @@ def extract_transparent_squircle_qimage(src_file: Path) -> Optional[tuple[bytes,
     except Exception:
         pass
 
-    # 2. Pure PySide6 fallback: Standard DIB for <=128 (Explorer/GDI compliant) and PNG for 256
+    # 2. Phương án dự phòng thuần PySide6: DIB chuẩn cho kích thước <=128 và PNG cho 256
     target_sizes = [256, 128, 64, 48, 32, 16]
     ico_entries: list[tuple[int, bytes]] = []
 
@@ -195,7 +194,7 @@ def extract_transparent_squircle_qimage(src_file: Path) -> Optional[tuple[bytes,
 
 
 def extract_transparent_squircle_pil(src_file: Path) -> Optional[tuple[bytes, bytes]]:
-    """Crop dark squircle tile, strip light background, and apply smooth transparent corners using Pillow."""
+    """Cắt khối squircle bo góc, xóa phông nền sáng và tạo nền trong suốt bằng Pillow."""
     try:
         from PIL import Image, ImageDraw
     except ImportError:
@@ -260,13 +259,13 @@ def extract_transparent_squircle_pil(src_file: Path) -> Optional[tuple[bytes, by
 
 
 def ensure_app_icons(force: bool = False) -> tuple[Optional[Path], Optional[Path]]:
-    """Ensure that assets/icon.ico and assets/icon.png exist with 100% transparent background.
+    """Đảm bảo các file assets/icon.ico và assets/icon.png luôn sẵn sàng với nền trong suốt 100%.
     
-    Args:
-        force: If True, re-extract and regenerate even if files already exist.
+    Tham số:
+        force: Nếu True, trích xuất và tạo lại dù file đã tồn tại.
         
-    Returns:
-        tuple of (ico_path, png_path)
+    Trả về:
+        tuple (ico_path, png_path)
     """
     from src.core.config import get_assets_dir
     

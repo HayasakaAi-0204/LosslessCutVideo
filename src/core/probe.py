@@ -1,19 +1,21 @@
-"""Module for inspecting video files using ffprobe.
+"""Module phân tích thông tin video sử dụng ffprobe.
 
-Extracts metadata (duration, resolution, fps, streams) and keyframe (I-frame) timestamps.
+Trích xuất siêu dữ liệu (thời lượng, độ phân giải, fps, các luồng stream) và danh sách mốc thời gian Keyframe (I-frame).
 """
 
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
+import sys
 from typing import Any
 
 from src.core.config import get_ffprobe_path
 
 
 def safe_float(val: Any, default: float = 0.0) -> float:
-    """Safely convert a value to float, handling 'N/A', None, and invalid formats."""
+    """Chuyển đổi giá trị sang float an toàn, xử lý các trường hợp 'N/A', None hoặc định dạng lỗi."""
     if val is None or val == "N/A" or val == "":
         return default
     try:
@@ -24,7 +26,7 @@ def safe_float(val: Any, default: float = 0.0) -> float:
 
 
 def format_bitrate(bitrate_raw: Any) -> str:
-    """Format raw bitrate value to human-readable string (e.g. 58.2 Mbps or 320 kbps)."""
+    """Định dạng bitrate thô thành chuỗi dễ đọc (ví dụ: 58.2 Mbps hoặc 320 kbps)."""
     if not bitrate_raw:
         return ""
     try:
@@ -39,7 +41,7 @@ def format_bitrate(bitrate_raw: Any) -> str:
 
 
 def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
-    """Parse raw ffprobe JSON output into a structured dictionary."""
+    """Phân tích chuỗi JSON thô từ ffprobe thành dictionary có cấu trúc."""
     data = json.loads(raw_json)
     format_info = data.get("format", {})
     streams = data.get("streams", [])
@@ -142,6 +144,19 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
         duration = safe_float(video_stream.get("duration"))
     if duration <= 0.0 and audio_streams:
         duration = safe_float(audio_streams[0].get("duration"))
+    if duration <= 0.0:
+        # Dự phòng kiểm tra tags DURATION trong format hoặc các stream
+        for container in [format_info, video_stream] + audio_streams:
+            if not container:
+                continue
+            tags = container.get("tags") or {}
+            dur_tag = tags.get("DURATION") or tags.get("DURATION-eng")
+            if dur_tag:
+                from src.core.worker import parse_time_to_seconds
+                d = parse_time_to_seconds(dur_tag)
+                if d > 0:
+                    duration = d
+                    break
 
     fps = 0.0
     width = 0
@@ -160,7 +175,7 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
         except Exception:
             fps = 0.0
 
-        # Detect orientation rotation from tags or display matrix
+        # Phát hiện góc xoay hiển thị từ metadata tags hoặc display matrix
         v_tags = video_stream.get("tags") or {}
         rot_val = v_tags.get("rotate")
         if rot_val is not None:
@@ -194,17 +209,17 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
 
 
 def parse_keyframe_csv(csv_text: str) -> list[float]:
-    """Parse ffprobe CSV output for keyframe timestamps.
+    """Phân tích dữ liệu CSV từ ffprobe để lấy danh sách mốc thời gian Keyframe.
     
-    Supports both two-column format (ts,is_key), single-column (-skip_frame nokey),
-    and multi-entry format (pts_time,pkt_pts_time).
+    Hỗ trợ định dạng 2 cột (ts,is_key), định dạng 1 cột (-skip_frame nokey),
+    và định dạng đa phần tử (pts_time,pkt_pts_time).
     """
     keyframes: list[float] = []
     for line in csv_text.strip().splitlines():
         parts = [p.strip() for p in line.split(",") if p.strip()]
         if not parts:
             continue
-        # Scan parts to find the first valid non-negative float
+        # Quét các phần tử để tìm giá trị float dương hợp lệ đầu tiên
         for part in parts:
             if part in ("N/A", "0/0", "none", "null"):
                 continue
@@ -219,17 +234,17 @@ def parse_keyframe_csv(csv_text: str) -> list[float]:
 
 
 def probe_video_info(video_path: str | Path) -> dict[str, Any]:
-    """Run ffprobe to get comprehensive video metadata.
+    """Chạy ffprobe để trích xuất siêu dữ liệu toàn diện của video.
     
-    Args:
-        video_path: Path to the input video file.
+    Tham số:
+        video_path: Đường dẫn tới file video đầu vào.
         
-    Returns:
-        Dictionary with parsed video information.
+    Trả về:
+        Dictionary chứa các thông tin video đã bóc tách.
         
-    Raises:
-        FileNotFoundError: If video_path does not exist.
-        RuntimeError: If ffprobe fails.
+    Ngoại lệ:
+        FileNotFoundError: Nếu file video không tồn tại.
+        RuntimeError: Nếu ffprobe gặp sự cố thực thi.
     """
     path = Path(video_path).resolve()
     if not path.is_file():
@@ -268,16 +283,16 @@ def probe_video_info(video_path: str | Path) -> dict[str, Any]:
 
 
 def get_keyframe_timestamps(video_path: str | Path, timeout: float = 30.0) -> list[float]:
-    """Extract list of Keyframe (I-frame) timestamps in seconds.
+    """Trích xuất danh sách các mốc thời gian Keyframe (I-frame) tính bằng giây.
     
-    Uses -skip_frame nokey for high performance demuxing without decoding P/B frames.
+    Sử dụng cờ -skip_frame nokey để tách gói cực nhanh mà không cần giải mã frame P/B.
     
-    Args:
-        video_path: Path to the video file.
-        timeout: Maximum seconds to wait before falling back.
+    Tham số:
+        video_path: Đường dẫn tới file video.
+        timeout: Thời gian tối đa (giây) trước khi chuyển sang phương pháp dự phòng.
         
-    Returns:
-        List of keyframe timestamps in ascending order.
+    Trả về:
+        Danh sách các mốc Keyframe được sắp xếp tăng dần.
     """
     path = Path(video_path).resolve()
     if not path.is_file():
@@ -287,7 +302,7 @@ def get_keyframe_timestamps(video_path: str | Path, timeout: float = 30.0) -> li
     import sys
     creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
-    # 1. Primary method: frame pts_time with skip_frame nokey
+    # 1. Phương pháp chính: đọc frame pts_time kết hợp cờ -skip_frame nokey
     cmd_frames = [
         str(ffprobe_bin),
         "-v", "error",
@@ -317,7 +332,7 @@ def get_keyframe_timestamps(video_path: str | Path, timeout: float = 30.0) -> li
     except Exception:
         pass
 
-    # 2. Fast Fallback: packet level flags (works for AV1/HEVC without frame decoding)
+    # 2. Phương pháp dự phòng nhanh: kiểm tra cờ K ở cấp độ packet (hoạt động tốt với AV1/HEVC)
     cmd_packets = [
         str(ffprobe_bin),
         "-v", "error",

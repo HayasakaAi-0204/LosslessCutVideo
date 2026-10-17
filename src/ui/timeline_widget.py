@@ -1,8 +1,8 @@
-"""CapCut-style Multi-Track Timeline Widget for Lossless Video Cutter.
+"""Widget dòng thời gian đa luồng (Multi-track Timeline) phong cách CapCut cho Lossless Video Cutter.
 
-Provides visual multi-track lanes (Video with thumbnail filmstrip, Audio streams
-with authentic waveforms, Subtitles), time ruler, In/Out range highlighting,
-interactive playhead scrubbing, per-track inclusion toggles, and zoom controls.
+Cung cấp các rãnh hiển thị trực quan (Video với dải cuộn phim, Audio với sóng âm thanh thực tế,
+Phụ đề), thước đo thời gian, vùng chọn cắt In/Out nổi bật, thanh Playhead tương tác,
+nút bật/tắt từng track độc lập và bộ điều khiển thu phóng zoom.
 """
 
 import bisect
@@ -46,30 +46,30 @@ from src.ui.styles import (
 )
 
 
-# Palette presets for distinct track types
+# Bảng màu cài sẵn phân biệt các loại rãnh track
 TRACK_PALETTES = [
-    # Video palette (Teal / Cyan)
+    # Bảng màu Video (Xanh mòng két / Cyan)
     {"bg_grad1": QColor("#0e6251"), "bg_grad2": QColor("#16a085"), "border": QColor("#1abc9c"), "accent": QColor("#48c9b0")},
-    # Audio 1 (CapCut Blue)
+    # Audio 1 (Xanh dương CapCut)
     {"bg_grad1": QColor("#1b4f72"), "bg_grad2": QColor("#2874a6"), "border": QColor("#2980b9"), "accent": QColor("#38bdf8")},
-    # Audio 2 (Emerald Green)
+    # Audio 2 (Xanh ngọc lục bảo)
     {"bg_grad1": QColor("#145a32"), "bg_grad2": QColor("#1e8449"), "border": QColor("#27ae60"), "accent": QColor("#4ade80")},
-    # Audio 3 (Purple / Amethyst)
+    # Audio 3 (Tím thạch anh)
     {"bg_grad1": QColor("#4a235a"), "bg_grad2": QColor("#6c3483"), "border": QColor("#8e44ad"), "accent": QColor("#c084fc")},
-    # Audio 4 (Amber / Orange)
+    # Audio 4 (Hổ phách / Cam)
     {"bg_grad1": QColor("#7e5109"), "bg_grad2": QColor("#b9770e"), "border": QColor("#d35400"), "accent": QColor("#fb923c")},
 ]
 
 
 class TimelineCanvas(QWidget):
-    """Custom painted timeline canvas with ruler, video filmstrip, and audio waveforms."""
+    """Canvas tự vẽ Timeline tích hợp thước đo thời gian, dải cuộn phim và sóng âm thanh."""
 
     seek_requested = Signal(int)  # ms
-    in_point_dragged = Signal(float)  # sec
-    out_point_dragged = Signal(float)  # sec
+    in_point_dragged = Signal(float)  # giây
+    out_point_dragged = Signal(float)  # giây
     drag_finished = Signal(str)  # 'in' | 'out' | 'playhead'
     track_clicked = Signal(int)  # stream_index
-    zoom_requested = Signal(int)  # delta step for Ctrl+Wheel zoom
+    zoom_requested = Signal(int)  # bước delta khi Ctrl + Lăn chuột
 
     RULER_HEIGHT = 28
     LANE_HEIGHT = 44
@@ -85,27 +85,27 @@ class TimelineCanvas(QWidget):
         self._current_pos_sec: float = 0.0
         self._in_point_sec: float = 0.0
         self._out_point_sec: float = 0.0
-        self._pixels_per_sec: float = 50.0  # Zoom level
+        self._pixels_per_sec: float = 50.0  # Tỷ lệ zoom
         self._tracks: list[dict[str, Any]] = []
         self._active_stream_indices: set[int] = set()
 
-        # Per-track cut state
+        # Trạng thái cắt từng track
         self._track_cut_ranges: dict[int, tuple[float, float]] = {}
         self._selected_stream_index: int | None = None
         self._cut_mode: str = "global"
 
-        # Real preview data
+        # Dữ liệu xem trước thực tế
         self._thumbnails: list[dict[str, Any]] = []  # [{"time_sec": float, "pixmap": QPixmap}]
         self._audio_waveforms: dict[int, list[float]] = {}  # {stream_index: [float]}
         self._keyframes: list[float] = []
 
-        # Drag state: None, 'playhead', 'in', 'out'
+        # Trạng thái kéo chuột: None, 'playhead', 'in', 'out'
         self._drag_mode: str | None = None
 
         self._update_geometry()
 
     def set_keyframes(self, keyframes: list[float]):
-        """Pass keyframes to canvas for visual ticks and snap aids."""
+        """Truyền danh sách Keyframe vào canvas để vẽ vạch chia và hỗ trợ bám dính."""
         self._keyframes = list(keyframes)
         self.update()
 
@@ -122,13 +122,17 @@ class TimelineCanvas(QWidget):
         self.update()
 
     def clear_preview_data(self):
-        """Clear cached thumbnails, waveforms, and keyframes when loading a completely new file."""
+        """Xóa cache ảnh thumbnail, sóng âm và keyframe khi nạp file video hoàn toàn mới."""
         self._thumbnails = []
         self._audio_waveforms = {}
         self._keyframes = []
         self.update()
 
     def set_duration(self, duration_sec: float):
+        # BẢO VỆ AN TOÀN: Tuyệt đối không ghi đè thời lượng video hợp lệ (> 0) bằng 0 hoặc âm
+        # khi media player gặp lỗi giải mã hoặc đang khởi tạo
+        if duration_sec <= 0 and self._duration_sec > 0:
+            return
         if abs(self._duration_sec - duration_sec) < 0.05 and self._duration_sec > 0:
             return
         self._duration_sec = max(0.0, duration_sec)
@@ -139,7 +143,7 @@ class TimelineCanvas(QWidget):
 
     def set_position(self, pos_sec: float):
         if self._drag_mode is not None:
-            # User is actively dragging playhead or in/out markers, do not overwrite with player tick
+            # Người dùng đang chủ động kéo con trỏ phát hoặc mốc In/Out, không ghi đè từ nhịp phát của player
             return
         self._current_pos_sec = max(0.0, min(self._duration_sec, pos_sec))
         self.update()
@@ -168,16 +172,16 @@ class TimelineCanvas(QWidget):
         self.update()
 
     def set_thumbnails(self, thumbnails_data: list[dict[str, Any]]):
-        """No-op: Video tracks use lightweight SVG/vector filmstrip perforations for zero latency."""
+        """Không thực hiện: Track video dùng răng cưa cuộn phim vector nhẹ để có độ trễ bằng 0."""
         self._thumbnails = []
 
     def set_audio_waveforms(self, waveforms: dict[int, list[float]]):
-        """Store extracted real audio waveforms and repaint."""
+        """Lưu trữ dạng sóng âm thanh thực đã trích xuất và vẽ lại giao diện."""
         self._audio_waveforms.update(waveforms)
         self.update()
 
     def set_audio_waveform_stream(self, stream_index: int, peaks: list[float]):
-        """Store a single stream waveform and repaint immediately."""
+        """Lưu trữ dạng sóng của một luồng đơn và vẽ lại ngay lập tức."""
         self._audio_waveforms[stream_index] = peaks
         self.update()
 
@@ -205,7 +209,7 @@ class TimelineCanvas(QWidget):
         sec = (x - 10.0) / self._pixels_per_sec
         return max(0.0, min(self._duration_sec, sec))
 
-    # --- Mouse Events ---
+    # --- Sự kiện chuột ---
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() != Qt.MouseButton.LeftButton or not self._tracks or self._duration_sec <= 0:
             return
@@ -214,14 +218,14 @@ class TimelineCanvas(QWidget):
         y = event.position().y()
         click_sec = self._x_to_sec(x)
 
-        # If clicked on a track lane, select that track
+        # Nếu nhấp vào một lane track, chọn track đó
         if y > self.RULER_HEIGHT:
             lane_idx = int((y - self.RULER_HEIGHT) // (self.LANE_HEIGHT + self.LANE_SPACING))
             if 0 <= lane_idx < len(self._tracks):
                 clicked_s_idx = self._tracks[lane_idx].get("stream_index", lane_idx)
                 self.track_clicked.emit(clicked_s_idx)
 
-        # Mouse clicks & drags on canvas strictly move the playhead (In/Out markers are set via buttons/shortcuts)
+        # Nhấp và kéo chuột trên canvas dùng để di chuyển con trỏ phát (các mốc In/Out đặt qua nút bấm/phím tắt)
         self._drag_mode = "playhead"
         self._current_pos_sec = click_sec
         self.seek_requested.emit(int(click_sec * 1000))
@@ -239,7 +243,7 @@ class TimelineCanvas(QWidget):
             self.seek_requested.emit(int(cur_sec * 1000))
             self.update()
         else:
-            # Mouse is not pressed: keep normal arrow cursor across the timeline
+            # Chuột không được nhấn: giữ con trỏ chuột hình mũi tên chuẩn trên timeline
             self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
 
     def mouseReleaseEvent(self, event: QMouseEvent):
@@ -249,7 +253,7 @@ class TimelineCanvas(QWidget):
             self.drag_finished.emit(mode)
 
     def wheelEvent(self, event: QWheelEvent):
-        """Allow Ctrl+MouseWheel zooming directly on the timeline canvas."""
+        """Cho phép phóng to/thu nhỏ bằng Ctrl + Con lăn chuột trực tiếp trên timeline."""
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             delta = event.angleDelta().y()
             if delta != 0:
@@ -259,9 +263,9 @@ class TimelineCanvas(QWidget):
                 return
         super().wheelEvent(event)
 
-    # --- Viewport Culling & Fast Painting ---
+    # --- Cắt tỉa khung nhìn (Viewport Culling) & Vẽ siêu tốc ---
     def _get_visible_x_bounds(self) -> tuple[float, float]:
-        """Return (vis_left, vis_right) in canvas coordinates representing the area currently in view."""
+        """Trả về (vis_left, vis_right) theo tọa độ canvas đại diện cho vùng đang hiển thị trên màn hình."""
         parent = self.parent()
         if isinstance(parent, QWidget):
             vp_rect = parent.rect()
@@ -284,10 +288,10 @@ class TimelineCanvas(QWidget):
         h = self.height()
         vis_left, vis_right = self._get_visible_x_bounds()
 
-        # 1. Background (only visible viewport slice)
+        # 1. Hình nền (chỉ vẽ phần cắt khung nhìn đang hiển thị)
         painter.fillRect(QRectF(vis_left, 0, vis_right - vis_left, h), QColor("#16181d"))
 
-        # 2. Draw Time Ruler (culled)
+        # 2. Vẽ thước thời gian (đã áp dụng cắt tỉa khung nhìn)
         self._draw_ruler(painter, w, vis_left, vis_right)
 
         if not self._tracks or self._duration_sec <= 0:
@@ -297,20 +301,20 @@ class TimelineCanvas(QWidget):
             painter.drawText(empty_rect, Qt.AlignmentFlag.AlignCenter, "Chưa nạp video (Kéo thả video vào bất kỳ đâu hoặc bấm 'Mở Video')")
             return
 
-        # 3. Draw Track Lanes (Video Filmstrip & Audio Waveforms - culled)
+        # 3. Vẽ các lane track (Cuộn phim video & Dạng sóng âm thanh - đã cắt tỉa)
         self._draw_tracks(painter, w, vis_left, vis_right)
 
-        # 4. Draw Cut Selection Overlay (In -> Out - culled)
+        # 4. Vẽ lớp phủ vùng chọn cắt (In -> Out - đã cắt tỉa)
         self._draw_cut_overlay(painter, w, h, vis_left, vis_right)
 
-        # 5. Draw Playhead Needle (culled)
+        # 5. Vẽ kim con trỏ phát (đã cắt tỉa)
         self._draw_playhead(painter, h, vis_left, vis_right)
 
     def _draw_ruler(self, painter: QPainter, width: int, vis_left: float, vis_right: float):
         ruler_rect = QRectF(vis_left, 0, vis_right - vis_left, self.RULER_HEIGHT)
         painter.fillRect(ruler_rect, QColor("#1e222b"))
 
-        # Bottom border of ruler
+        # Đường viền dưới của thước đo
         painter.setPen(QPen(QColor("#2c313c"), 1))
         painter.drawLine(QPointF(vis_left, self.RULER_HEIGHT), QPointF(vis_right, self.RULER_HEIGHT))
 
@@ -323,15 +327,15 @@ class TimelineCanvas(QWidget):
 
         MIN_LABEL_PX_SPACING = 75.0
 
-        # Mode A: Keyframe-Centric Ruler (Numbers and marks shown exclusively at Keyframes)
+        # Chế độ A: Thước đo tập trung vào Keyframe (Số và vạch chia chỉ hiển thị tại Keyframe)
         if self._keyframes:
             start_sec = max(0.0, self._x_to_sec(vis_left) - 1.0)
             end_sec = min(self._duration_sec, self._x_to_sec(vis_right) + 1.0)
 
-            # Filter visible keyframes in current viewport
+            # Lọc các keyframe nằm trong khung nhìn hiện tại
             visible_kfs = [k for k in self._keyframes if start_sec <= k <= end_sec]
 
-            # 1. First pass: Draw emerald ticks for ALL visible keyframes
+            # 1. Lượt 1: Vẽ các vạch màu ngọc lục bảo cho TẤT CẢ keyframe hiển thị
             kf_pen = QPen(QColor("#2ecc71"), 1.8)
             painter.setPen(kf_pen)
             for kf in visible_kfs:
@@ -340,7 +344,7 @@ class TimelineCanvas(QWidget):
                     painter.drawLine(QPointF(kx, self.RULER_HEIGHT - 10), QPointF(kx, self.RULER_HEIGHT))
                     painter.drawPoint(QPointF(kx, self.RULER_HEIGHT - 12))
 
-            # 2. Second pass: Draw timestamp numbers at keyframe positions (guaranteeing >= 75px spacing)
+            # 2. Lượt 2: Vẽ số mốc thời gian tại các vị trí keyframe (đảm bảo khoảng cách >= 75px)
             last_text_x = -9999.0
             painter.setPen(QColor("#2ecc71"))
 
@@ -353,7 +357,7 @@ class TimelineCanvas(QWidget):
                     millis = int(round((kf - int(kf)) * 100))
 
                     if pps >= 20.0:
-                        # Precision milliseconds when zoomed in
+                        # Độ chính xác mili-giây khi phóng to
                         label = f"{mins:02d}:{secs:02d}.{millis:02d}"
                     elif hrs > 0:
                         label = f"{hrs:02d}:{mins:02d}:{secs:02d}"
@@ -363,7 +367,7 @@ class TimelineCanvas(QWidget):
                     painter.drawText(QRectF(kx - 35, 1, 70, 14), Qt.AlignmentFlag.AlignCenter, label)
                     last_text_x = kx
 
-        # Mode B: Fallback time ruler (while scanning keyframes in background or for audio-only containers)
+        # Chế độ B: Thước thời gian dự phòng (khi đang quét keyframe ngầm hoặc file chỉ có âm thanh)
         else:
             step_presets = [
                 (0.2, 0.05), (0.5, 0.1), (1.0, 0.2), (2.0, 0.5), (5.0, 1.0),
@@ -421,7 +425,7 @@ class TimelineCanvas(QWidget):
             is_active = (s_idx in self._active_stream_indices) or (not self._active_stream_indices)
             c_type = trk.get("codec_type", "video")
 
-            # Determine color palette
+            # Xác định bảng màu tương ứng
             if c_type == "video":
                 palette = TRACK_PALETTES[0]
             elif c_type == "audio":
@@ -431,10 +435,10 @@ class TimelineCanvas(QWidget):
             else:
                 palette = TRACK_PALETTES[4]
 
-            # Lane background slot (visible span only)
+            # Nền cho lane track (chỉ trong phạm vi hiển thị)
             painter.fillRect(QRectF(vis_left, lane_y, vis_right - vis_left, self.LANE_HEIGHT), QColor("#1c1f26"))
 
-            # Clip Block
+            # Khối clip
             if lane_rect.right() < vis_left or lane_rect.left() > vis_right:
                 continue
 
@@ -442,7 +446,7 @@ class TimelineCanvas(QWidget):
             if not is_active:
                 painter.setOpacity(0.3)
 
-            # Gradient base for clip
+            # Màu gradient nền cho clip
             grad = QLinearGradient(lane_rect.topLeft(), lane_rect.bottomLeft())
             grad.setColorAt(0.0, palette["bg_grad1"])
             grad.setColorAt(1.0, palette["bg_grad2"])
@@ -450,15 +454,15 @@ class TimelineCanvas(QWidget):
             painter.setPen(QPen(palette["border"], 1.5))
             painter.drawRoundedRect(lane_rect, 4.0, 4.0)
 
-            # 1. Video Lane: Render Clean Lightweight Filmstrip Perforations (0% CPU, 0s delay)
+            # 1. Lane Video: Vẽ răng cưa cuộn phim vector nhẹ (0% CPU, 0s trễ)
             if c_type == "video":
                 self._draw_filmstrip_perforations(painter, lane_rect, vis_left, vis_right)
 
-            # 2. Audio Lane: Render Real Audio Waveform (culled)
+            # 2. Lane Âm thanh: Vẽ dạng sóng âm thanh thực tế (đã cắt tỉa)
             elif c_type == "audio":
                 self._draw_real_audio_wave(painter, lane_rect, palette["accent"], s_idx, vis_left, vis_right)
 
-            # Clip Title Badge (CapCut style: Pinned to visible left edge so track info is always readable)
+            # Nhãn tên Clip (Ghim sát mép trái hiển thị để luôn nhìn rõ thông tin track)
             label_text = f"{trk.get('icon', '🎬')} {trk.get('type_label', 'Track')} : {trk.get('codec_name', '').upper()} {trk.get('details', '')}"
             if trk.get("title"):
                 label_text += f" ({trk.get('title')})"
@@ -484,14 +488,14 @@ class TimelineCanvas(QWidget):
             painter.restore()
 
     def _draw_video_filmstrip(self, painter: QPainter, rect: QRectF, vis_left: float, vis_right: float):
-        """Draw real video thumbnail frames as a continuous filmstrip with preserved aspect ratio."""
+        """Vẽ ảnh thu nhỏ video thành cuộn phim liên tục, giữ nguyên tỉ lệ khung hình."""
         if not self._thumbnails:
             return
 
         painter.save()
         painter.setClipRect(rect)
 
-        # 1. Determine natural frame aspect ratio from loaded thumbnails
+        # 1. Xác định tỉ lệ khung hình thực từ các ảnh thu nhỏ đã tải
         first_pix = self._thumbnails[0].get("pixmap")
         aspect_ratio = 16.0 / 9.0
         if first_pix and not first_pix.isNull() and first_pix.height() > 0:
@@ -503,7 +507,7 @@ class TimelineCanvas(QWidget):
         times = [item["time_sec"] for item in self._thumbnails]
         count = len(times)
 
-        # 2. Viewport Culling: Tile frames ONLY across visible range
+        # 2. Cắt tỉa khung nhìn: Chỉ xếp các khung hình trong phạm vi đang hiển thị
         left_bound = max(rect.left(), vis_left - frame_w)
         right_bound = min(rect.right(), vis_right + frame_w)
 
@@ -528,13 +532,13 @@ class TimelineCanvas(QWidget):
                 frame_rect = QRectF(tile_x, rect.top() + 1.0, frame_w, h)
                 painter.drawPixmap(frame_rect.toRect(), pix)
 
-            # Thin divider line between adjacent filmstrip frames
+            # Đường phân cách mảnh giữa các khung hình liên tiếp
             painter.setPen(QPen(QColor(0, 0, 0, 160), 1.0))
             painter.drawLine(QPointF(tile_x + frame_w, rect.top()), QPointF(tile_x + frame_w, rect.bottom()))
 
             tile_x += frame_w
 
-        # Subtle top & bottom filmstrip borders
+        # Đường viền trên và dưới của cuộn phim
         painter.setPen(QPen(QColor(0, 0, 0, 100), 1.0))
         painter.drawLine(QPointF(max(rect.left(), vis_left), rect.top()), QPointF(min(rect.right(), vis_right), rect.top()))
         painter.drawLine(QPointF(max(rect.left(), vis_left), rect.bottom()), QPointF(min(rect.right(), vis_right), rect.bottom()))
@@ -542,7 +546,7 @@ class TimelineCanvas(QWidget):
         painter.restore()
 
     def _draw_real_audio_wave(self, painter: QPainter, rect: QRectF, color: QColor, stream_index: int, vis_left: float, vis_right: float):
-        """Draw real extracted audio waveform peaks across the audio lane."""
+        """Vẽ các đỉnh sóng âm thanh thực tế đã trích xuất trên lane âm thanh."""
         peaks = self._audio_waveforms.get(stream_index)
         if not peaks:
             keys = sorted(list(self._audio_waveforms.keys()))
@@ -560,23 +564,23 @@ class TimelineCanvas(QWidget):
 
         mid_y = rect.center().y()
 
-        # 1. Subtle centerline guide for silence regions (visible span only)
+        # 1. Đường tâm mảnh cho các vùng im lặng (chỉ trong phạm vi hiển thị)
         guide_pen = QPen(QColor(color.red(), color.green(), color.blue(), 55), 1.0)
         painter.setPen(guide_pen)
         painter.drawLine(QPointF(max(rect.left() + 4, vis_left), mid_y), QPointF(min(rect.right() - 4, vis_right), mid_y))
 
-        # 2. CapCut style crisp vertical waveform bars with rounded caps
+        # 2. Các cột dạng sóng sắc nét dạng bo tròn hai đầu (phong cách CapCut)
         bar_pen = QPen(color, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(bar_pen)
 
         max_h = (rect.height() - 6) / 2.0
-        step = 3.0  # 3 pixels per bar
+        step = 3.0  # 3 pixel mỗi cột sóng
 
         total_samples = len(peaks)
         pps = self._pixels_per_sec
         SAMPLES_PER_SEC = 200.0
 
-        # Viewport Culling: Only draw waveform bars within [vis_left, vis_right]
+        # Cắt tỉa khung nhìn: Chỉ vẽ các cột sóng trong phạm vi [vis_left, vis_right]
         left_bound = max(rect.left() + 4.0, vis_left)
         right_bound = min(rect.right() - 4.0, vis_right)
 
@@ -605,7 +609,7 @@ class TimelineCanvas(QWidget):
         painter.restore()
 
     def _draw_fallback_audio_wave(self, painter: QPainter, rect: QRectF, color: QColor, seed: int, vis_left: float, vis_right: float):
-        """Clean baseline while background real audio waveform is loading."""
+        """Đường cơ sở dự phòng trong khi dạng sóng thực đang tải ngầm."""
         painter.save()
         painter.setClipRect(rect)
         painter.setPen(QPen(color, 1.2))
@@ -614,7 +618,7 @@ class TimelineCanvas(QWidget):
         painter.restore()
 
     def _draw_filmstrip_perforations(self, painter: QPainter, rect: QRectF, vis_left: float, vis_right: float):
-        """Draw subtle filmstrip perforation notches for video clip."""
+        """Vẽ các lỗ răng cưa cuộn phim cho clip video."""
         painter.save()
         painter.setClipRect(rect)
         painter.setBrush(QBrush(QColor(0, 0, 0, 70)))
@@ -634,13 +638,13 @@ class TimelineCanvas(QWidget):
         painter.restore()
 
     def _draw_cut_overlay(self, painter: QPainter, width: int, height: int, vis_left: float, vis_right: float):
-        """Shade the excluded regions per track lane and on the ruler, and draw In/Out markers."""
+        """Làm tối các vùng bị loại trừ trên từng lane track và thước đo, đồng thời vẽ mốc In/Out."""
         if self._duration_sec <= 0:
             return
 
         dim_brush = QBrush(QColor(10, 12, 16, 185))
 
-        # 1. Dim excluded regions per track lane (clamped to visible range)
+        # 1. Làm tối vùng bị loại trừ trên từng lane track (giới hạn trong khung nhìn)
         for i, trk in enumerate(self._tracks):
             s_idx = trk.get("stream_index", i)
             trk_in, trk_out = self._track_cut_ranges.get(s_idx, (self._in_point_sec, self._out_point_sec))
@@ -648,19 +652,19 @@ class TimelineCanvas(QWidget):
             out_x = self._sec_to_x(trk_out)
             lane_y = self.RULER_HEIGHT + self.LANE_SPACING + i * (self.LANE_HEIGHT + self.LANE_SPACING)
 
-            # Dim before In of this track
+            # Làm tối phần trước điểm In của track này
             dim_before_end = min(in_x, vis_right)
             dim_before_start = max(0.0, vis_left)
             if dim_before_end > dim_before_start:
                 painter.fillRect(QRectF(dim_before_start, lane_y, dim_before_end - dim_before_start, self.LANE_HEIGHT), dim_brush)
 
-            # Dim after Out of this track
+            # Làm tối phần sau điểm Out của track này
             dim_after_start = max(out_x, vis_left)
             dim_after_end = min(float(width), vis_right)
             if dim_after_end > dim_after_start:
                 painter.fillRect(QRectF(dim_after_start, lane_y, dim_after_end - dim_after_start, self.LANE_HEIGHT), dim_brush)
 
-            # Selected track active region highlight (glowing cyan border)
+            # Làm nổi bật vùng đang chọn của track (viền xanh cyan phát sáng)
             if s_idx == self._selected_stream_index:
                 painter.save()
                 painter.setPen(QPen(QColor("#00d2d3"), 2.0))
@@ -669,7 +673,7 @@ class TimelineCanvas(QWidget):
                 painter.drawRoundedRect(QRectF(in_x, lane_y, active_w, self.LANE_HEIGHT), 2, 2)
                 painter.restore()
 
-        # 2. Dim excluded regions on Ruler (clamped to visible range)
+            # 2. Làm tối vùng bị loại trừ trên thước đo (giới hạn trong khung nhìn)
         cur_in_x = self._sec_to_x(self._in_point_sec)
         cur_out_x = self._sec_to_x(self._out_point_sec)
         ruler_dim_brush = QBrush(QColor(10, 12, 16, 150))
@@ -684,12 +688,12 @@ class TimelineCanvas(QWidget):
         if dim_r_after_end > dim_r_after_start:
             painter.fillRect(QRectF(dim_r_after_start, 0, dim_r_after_end - dim_r_after_start, self.RULER_HEIGHT), ruler_dim_brush)
 
-        # 3. Vertical guidelines and Flags on Ruler (only if near or within view)
+        # 3. Đường gióng dọc và cờ mốc trên thước đo (chỉ vẽ khi nằm trong hoặc gần khung nhìn)
         if vis_left - 30 <= cur_in_x <= vis_right + 30:
             painter.setPen(QPen(QColor("#2ecc71"), 1.8, Qt.PenStyle.DashLine))
             painter.drawLine(QPointF(cur_in_x, self.RULER_HEIGHT), QPointF(cur_in_x, height))
 
-            # In Flag Handle on ruler
+            # Tay cầm cờ In trên thước đo
             in_flag = QPainterPath()
             in_flag.moveTo(cur_in_x, 0)
             in_flag.lineTo(cur_in_x + self.HANDLE_WIDTH, 0)
@@ -701,12 +705,12 @@ class TimelineCanvas(QWidget):
             painter.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
             painter.drawText(QRectF(cur_in_x + 1, 3, self.HANDLE_WIDTH - 1, 14), Qt.AlignmentFlag.AlignCenter, "I")
 
-        # 4. Out Point Marker (Red)
+        # 4. Mốc điểm Out (Đỏ)
         if vis_left - 30 <= cur_out_x <= vis_right + 30:
             painter.setPen(QPen(QColor("#e74c3c"), 2.0, Qt.PenStyle.DashLine))
             painter.drawLine(QPointF(cur_out_x, self.RULER_HEIGHT), QPointF(cur_out_x, height))
 
-            # Out Flag Handle on ruler
+            # Tay cầm cờ Out trên thước đo
             out_flag = QPainterPath()
             out_flag.moveTo(cur_out_x, 0)
             out_flag.lineTo(cur_out_x - self.HANDLE_WIDTH, 0)
@@ -719,16 +723,16 @@ class TimelineCanvas(QWidget):
             painter.drawText(QRectF(cur_out_x - self.HANDLE_WIDTH + 1, 3, self.HANDLE_WIDTH - 1, 14), Qt.AlignmentFlag.AlignCenter, "O")
 
     def _draw_playhead(self, painter: QPainter, height: int, vis_left: float, vis_right: float):
-        """Draw white playhead needle spanning across ruler and tracks."""
+        """Vẽ kim con trỏ phát màu trắng trải dài qua thước đo và các track."""
         play_x = self._sec_to_x(self._current_pos_sec)
         if not (vis_left - 20 <= play_x <= vis_right + 20):
             return
 
-        # Needle vertical line
+        # Đường dọc của kim phát
         painter.setPen(QPen(QColor("#ffffff"), 2.0))
         painter.drawLine(QPointF(play_x, self.RULER_HEIGHT), QPointF(play_x, height))
 
-        # Playhead Head on ruler
+        # Đầu kim con trỏ phát trên thước đo
         head_path = QPainterPath()
         head_path.moveTo(play_x - 6, 0)
         head_path.lineTo(play_x + 6, 0)
@@ -743,10 +747,10 @@ class TimelineCanvas(QWidget):
 
 
 class TrackHeadersWidget(QWidget):
-    """Left sidebar displaying track headers with enable/disable switches."""
+    """Thanh bên trái hiển thị tiêu đề các track cùng công tắc bật/tắt xuất."""
 
-    track_toggle_clicked = Signal(int, bool)  # stream_index, is_enabled
-    track_selected = Signal(int)  # stream_index
+    track_toggle_clicked = Signal(int, bool)  # stream_index, bật_hay_tắt
+    track_selected = Signal(int)  # chỉ_số_stream
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -757,7 +761,7 @@ class TrackHeadersWidget(QWidget):
         self._layout.setContentsMargins(4, 0, 4, 4)
         self._layout.setSpacing(4)
 
-        # Top Header matching Ruler Height
+        # Tiêu đề phía trên khớp với chiều cao của thước đo
         self._top_header = QWidget()
         self._top_header.setFixedHeight(TimelineCanvas.RULER_HEIGHT)
         top_h_layout = QHBoxLayout(self._top_header)
@@ -778,7 +782,7 @@ class TrackHeadersWidget(QWidget):
         self._selected_stream_index: int | None = None
 
     def set_tracks(self, tracks: list[dict[str, Any]], active_indices: set[int]):
-        # Clear existing
+        # Xóa danh sách hiện tại
         while self._items_layout.count():
             item = self._items_layout.takeAt(0)
             if item.widget():
@@ -801,7 +805,7 @@ class TrackHeadersWidget(QWidget):
             self._cards[s_idx] = card
             self._update_card_style(card, s_idx == self._selected_stream_index)
 
-            # Card click handler
+            # Bộ xử lý sự kiện nhấp vào thẻ track
             def _make_click_handler(idx):
                 return lambda event: self._on_card_clicked(idx, event)
             card.mousePressEvent = _make_click_handler(s_idx)
@@ -810,7 +814,7 @@ class TrackHeadersWidget(QWidget):
             card_layout.setContentsMargins(6, 2, 6, 2)
             card_layout.setSpacing(6)
 
-            # Info text
+            # Thông tin văn bản của track
             info_layout = QVBoxLayout()
             info_layout.setSpacing(1)
 
@@ -827,7 +831,7 @@ class TrackHeadersWidget(QWidget):
             info_layout.addWidget(lbl_meta)
             card_layout.addLayout(info_layout, stretch=1)
 
-            # Toggle button
+            # Nút bật/tắt xuất track
             btn_toggle = QPushButton("✓ Giữ" if is_active else "✕ Bỏ")
             btn_toggle.setCheckable(True)
             btn_toggle.setChecked(is_active)
@@ -874,6 +878,7 @@ class TrackHeadersWidget(QWidget):
                     color: white;
                     font-weight: bold;
                     font-size: 10px;
+                    padding: 2px 4px;
                     border-radius: 4px;
                     border: 1px solid #2ecc71;
                 }
@@ -885,6 +890,7 @@ class TrackHeadersWidget(QWidget):
                     background-color: #252a34;
                     color: #718096;
                     font-size: 10px;
+                    padding: 2px 4px;
                     border-radius: 4px;
                     border: 1px solid #3b4252;
                 }
@@ -893,14 +899,14 @@ class TrackHeadersWidget(QWidget):
 
 
 class TimelineWidget(QWidget):
-    """Full CapCut-style Multi-Track Timeline widget."""
+    """Widget Timeline đa track phong cách CapCut hoàn chỉnh."""
 
     seek_requested = Signal(int)  # ms
     in_point_changed = Signal(float)  # sec
     out_point_changed = Signal(float)  # sec
     snap_toggled = Signal(bool)
-    tracks_changed = Signal(list)  # list of active stream indices
-    track_selected = Signal(int)  # stream_index of selected track
+    tracks_changed = Signal(list)  # danh sách chỉ số stream đang kích hoạt
+    track_selected = Signal(int)  # chỉ số stream của track được chọn
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -911,8 +917,8 @@ class TimelineWidget(QWidget):
         self._tracks: list[dict[str, Any]] = []
         self._active_stream_indices: set[int] = set()
 
-        # Per-track cut state
-        self._cut_mode: str = "global"  # "global" or "per_track"
+        # Trạng thái cắt theo từng track riêng lẻ
+        self._cut_mode: str = "global"  # "global" hoặc "per_track"
         self._selected_stream_index: int | None = None
         self._track_cut_ranges: dict[int, tuple[float, float]] = {}
         self._keyframes: list[float] = []
@@ -924,14 +930,14 @@ class TimelineWidget(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(2)
 
-        # 1. Top Controls Bar
+        # 1. Thanh điều khiển phía trên
         ctrl_bar = QWidget()
         ctrl_bar.setStyleSheet("background-color: #1e222b; border-bottom: 1px solid #2c313c;")
         ctrl_layout = QHBoxLayout(ctrl_bar)
         ctrl_layout.setContentsMargins(8, 4, 8, 4)
         ctrl_layout.setSpacing(10)
 
-        # Current Playhead Time Display
+        # Hiển thị thời gian con trỏ phát hiện tại
         self.lbl_time_display = QLabel("00:00:00.000 / 00:00:00.000")
         self.lbl_time_display.setStyleSheet(
             "font-family: monospace; font-size: 13px; font-weight: bold; color: #00d2d3;"
@@ -940,7 +946,7 @@ class TimelineWidget(QWidget):
 
         ctrl_layout.addSpacing(10)
 
-        # In Point Button & Display
+        # Nút đặt và nhãn hiển thị điểm In
         self.btn_set_in = QPushButton("📍 Đặt In [I]")
         self.btn_set_in.setStyleSheet(BUTTON_SET_IN_STYLE)
         self.btn_set_in.setFixedHeight(28)
@@ -948,7 +954,7 @@ class TimelineWidget(QWidget):
         self.lbl_in_val = QLabel("In: 00:00:00.000")
         self.lbl_in_val.setStyleSheet("font-family: monospace; font-weight: bold; color: #2ecc71;")
 
-        # Out Point Button & Display
+        # Nút đặt và nhãn hiển thị điểm Out
         self.btn_set_out = QPushButton("🏁 Đặt Out [O]")
         self.btn_set_out.setStyleSheet(BUTTON_SET_OUT_STYLE)
         self.btn_set_out.setFixedHeight(28)
@@ -956,7 +962,7 @@ class TimelineWidget(QWidget):
         self.lbl_out_val = QLabel("Out: 00:00:00.000")
         self.lbl_out_val.setStyleSheet("font-family: monospace; font-weight: bold; color: #e74c3c;")
 
-        # Cut Duration
+        # Thời lượng đoạn cắt
         self.lbl_cut_dur = QLabel("Thời lượng cắt: 00:00:00.000")
         self.lbl_cut_dur.setStyleSheet("font-family: monospace; font-weight: bold; color: #f1c40f;")
 
@@ -970,8 +976,8 @@ class TimelineWidget(QWidget):
 
         ctrl_layout.addStretch()
 
-        # Zoom Controls (0% = Fit To Width, 100% = Detailed Zoom capped at 50 px/s)
-        self.btn_zoom_out = QPushButton("➖")
+        # Bộ điều khiển thu phóng (0% = Khớp chiều rộng, 100% = Phóng to chi tiết tối đa 50 px/s)
+        self.btn_zoom_out = QPushButton("-")
         self.btn_zoom_out.setFixedSize(28, 28)
         self.btn_zoom_out.setStyleSheet(UNIFIED_ICON_BUTTON_STYLE)
         self.btn_zoom_out.setToolTip("Thu nhỏ Timeline (-10%)")
@@ -1006,7 +1012,7 @@ class TimelineWidget(QWidget):
         """)
         self.zoom_slider.valueChanged.connect(self._on_zoom_slider_changed)
 
-        self.btn_zoom_in = QPushButton("➕")
+        self.btn_zoom_in = QPushButton("+")
         self.btn_zoom_in.setFixedSize(28, 28)
         self.btn_zoom_in.setStyleSheet(UNIFIED_ICON_BUTTON_STYLE)
         self.btn_zoom_in.setToolTip("Phóng to Timeline (+10%)")
@@ -1025,18 +1031,18 @@ class TimelineWidget(QWidget):
 
         main_layout.addWidget(ctrl_bar)
 
-        # 2. Tracks View (Left Headers + Right Canvas)
+        # 2. Vùng hiển thị Track (Tiêu đề bên trái + Canvas bên phải)
         tracks_container = QWidget()
         tracks_layout = QHBoxLayout(tracks_container)
         tracks_layout.setContentsMargins(0, 0, 0, 0)
         tracks_layout.setSpacing(0)
 
-        # Left Headers
+        # Tiêu đề các track bên trái
         self.headers_widget = TrackHeadersWidget()
         self.headers_widget.track_toggle_clicked.connect(self._on_track_toggled)
         tracks_layout.addWidget(self.headers_widget)
 
-        # Right Canvas inside ScrollArea
+        # Canvas bên phải đặt trong ScrollArea
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -1053,15 +1059,15 @@ class TimelineWidget(QWidget):
         self.scroll_area.setWidget(self.canvas)
         tracks_layout.addWidget(self.scroll_area, stretch=1)
 
-        # Wire Track Selection
+        # Kết nối tín hiệu chọn track
         self.headers_widget.track_selected.connect(self.select_track)
         self.canvas.track_clicked.connect(self.select_track)
 
         main_layout.addWidget(tracks_container)
 
-    # --- Public API for Player & Window ---
+    # --- API công khai cho Player & Window ---
     def select_track(self, stream_index: int):
-        """Set the active track for editing in per_track mode."""
+        """Thiết lập track kích hoạt để chỉnh sửa trong chế độ per_track."""
         self._selected_stream_index = stream_index
         self.headers_widget.set_selected_stream(stream_index)
         self.canvas.set_selected_stream(stream_index)
@@ -1076,7 +1082,7 @@ class TimelineWidget(QWidget):
         self.track_selected.emit(stream_index)
 
     def _on_cut_mode_toggled(self, checked: bool):
-        """Toggle between Global Cut and Per-Track Cut modes."""
+        """Chuyển đổi qua lại giữa chế độ Cắt đồng bộ và Cắt từng track."""
         if checked:
             self._cut_mode = "per_track"
             self.btn_cut_mode.setText("🎯 Cắt từng track")
@@ -1085,7 +1091,7 @@ class TimelineWidget(QWidget):
         else:
             self._cut_mode = "global"
             self.btn_cut_mode.setText("🔗 Cắt đồng bộ")
-            # When switching back to global: synchronize all tracks to master [in_point_sec, out_point_sec]
+            # Khi chuyển về cắt đồng bộ: đồng bộ tất cả các track theo mốc master [in_point_sec, out_point_sec]
             for s_idx in self._track_cut_ranges:
                 self._track_cut_ranges[s_idx] = (self._in_point_sec, self._out_point_sec)
             self.canvas.set_track_ranges(self._track_cut_ranges)
@@ -1096,15 +1102,15 @@ class TimelineWidget(QWidget):
         self._update_time_labels()
 
     def _get_video_stream_indices(self) -> list[int]:
-        """Return stream indices for all video tracks."""
+        """Trả về danh sách chỉ số stream của tất cả các track video."""
         indices = [trk.get("stream_index", 0) for trk in self._tracks if trk.get("codec_type") == "video"]
         if not indices and self._tracks:
-            # Fallback for audio-only files: treat the first stream as master
+            # Dự phòng cho tệp chỉ có âm thanh: coi stream đầu tiên là master
             indices = [self._tracks[0].get("stream_index", 0)]
         return indices
 
     def _is_video_stream(self, stream_index: int) -> bool:
-        """Return True if the stream is a video track (or master track for audio-only files)."""
+        """Trả về True nếu stream là track video (hoặc track master cho tệp chỉ có âm thanh)."""
         return stream_index in self._get_video_stream_indices()
 
     def _get_master_video_stream_index(self) -> int:
@@ -1112,11 +1118,11 @@ class TimelineWidget(QWidget):
         return video_indices[0] if video_indices else 0
 
     def _enforce_master_child_constraints(self, changed_s_idx: int):
-        """Ensure Master-Child constraint:
-        1. All video tracks are 100% synchronized with each other: (vid_in, vid_out).
-        2. Child audio/subtitle tracks are constrained: vid_in <= In_audio < Out_audio <= vid_out.
-           If video expands earlier, audio stays at its current position.
-           If video shrinks/pushes past audio, audio is pushed/pulled to stay inside video.
+        """Đảm bảo ràng buộc Master-Child:
+        1. Mọi track video luôn đồng bộ 100% với nhau: (vid_in, vid_out).
+        2. Các track âm thanh/phụ đề con bị ràng buộc: vid_in <= In_audio < Out_audio <= vid_out.
+           Nếu video mở rộng sang sớm hơn, âm thanh giữ nguyên vị trí hiện tại.
+           Nếu video thu hẹp vượt qua âm thanh, âm thanh được tự động đẩy/kéo để luôn nằm trọn trong video.
         """
         video_indices = self._get_video_stream_indices()
         master_v_idx = self._get_master_video_stream_index()
@@ -1124,14 +1130,14 @@ class TimelineWidget(QWidget):
             return
 
         if self._is_video_stream(changed_s_idx):
-            # A video track was modified: sync ALL video tracks together to (vid_in, vid_out)
+            # Một track video đã bị thay đổi: đồng bộ TẤT CẢ các track video theo (vid_in, vid_out)
             vid_in, vid_out = self._track_cut_ranges.get(changed_s_idx, (self._in_point_sec, self._out_point_sec))
             for v_idx in video_indices:
                 self._track_cut_ranges[v_idx] = (vid_in, vid_out)
             self._in_point_sec = vid_in
             self._out_point_sec = vid_out
 
-            # Auto-pull/push child non-video tracks so they remain strictly within [vid_in, vid_out]
+            # Tự động kéo/đẩy các track con phi-video để đảm bảo luôn nằm nghiêm ngặt trong [vid_in, vid_out]
             for s_idx, (a_in, a_out) in list(self._track_cut_ranges.items()):
                 if self._is_video_stream(s_idx):
                     continue
@@ -1139,7 +1145,7 @@ class TimelineWidget(QWidget):
                 new_out = min(vid_out, max(a_out, new_in + 0.05))
                 self._track_cut_ranges[s_idx] = (new_in, new_out)
         else:
-            # A non-video (audio/subtitle) track was modified: clamp strictly inside [vid_in, vid_out]
+            # Một track phi-video (âm thanh/phụ đề) bị sửa: giới hạn nghiêm ngặt bên trong [vid_in, vid_out]
             vid_in, vid_out = self._track_cut_ranges.get(master_v_idx, (self._in_point_sec, self._out_point_sec))
             a_in, a_out = self._track_cut_ranges.get(changed_s_idx, (vid_in, vid_out))
             new_in = max(vid_in, min(a_in, a_out - 0.05))
@@ -1147,19 +1153,19 @@ class TimelineWidget(QWidget):
             self._track_cut_ranges[changed_s_idx] = (new_in, new_out)
 
     def get_track_ranges(self) -> dict[int, tuple[float, float]]:
-        """Return mapping of stream_index -> (in_sec, out_sec)."""
+        """Trả về ánh xạ stream_index -> (in_sec, out_sec)."""
         return dict(self._track_cut_ranges)
 
     def get_cut_mode(self) -> str:
-        """Return current cut mode ('global' | 'per_track')."""
+        """Trả về chế độ cắt hiện tại ('global' | 'per_track')."""
         return self._cut_mode
 
     def clear_preview_data(self):
-        """Clear cached thumbnails and waveforms when loading a completely new file."""
+        """Xóa bộ nhớ đệm ảnh thu nhỏ và dạng sóng khi tải một tệp mới hoàn toàn."""
         self.canvas.clear_preview_data()
 
     def clear_timeline(self):
-        """Reset timeline and all tracks back to empty initial state."""
+        """Đặt lại timeline và tất cả các track về trạng thái trống ban đầu."""
         self._duration_sec = 0.0
         self._current_pos_sec = 0.0
         self._in_point_sec = 0.0
@@ -1182,6 +1188,12 @@ class TimelineWidget(QWidget):
         self._update_time_labels()
 
     def set_duration(self, duration_ms: int):
+        # BẢO VỆ AN TOÀN: Tuyệt đối không ghi đè thời lượng video hợp lệ (> 0) bằng 0 hoặc âm
+        # khi QMediaPlayer gặp lỗi giải mã (ResourceError/FormatError) hoặc báo 0ms
+        if duration_ms <= 0:
+            if self._duration_sec > 0:
+                return
+            duration_ms = 0
         new_dur = duration_ms / 1000.0
         if abs(self._duration_sec - new_dur) < 0.05 and self._duration_sec > 0:
             return
@@ -1201,7 +1213,7 @@ class TimelineWidget(QWidget):
         self.canvas.set_position(self._current_pos_sec)
         self._update_time_labels()
 
-        # Smooth auto-scroll during playback if playhead approaches viewport boundaries
+        # Tự động cuộn mượt mà trong khi phát nếu con trỏ phát tiến gần ranh giới khung nhìn
         if self.canvas._drag_mode is None and self._duration_sec > 0:
             vp = self.scroll_area.viewport()
             vp_w = vp.width()
@@ -1232,7 +1244,7 @@ class TimelineWidget(QWidget):
         self._update_time_labels()
 
     def set_keyframes(self, keyframes: list[float]):
-        """Pass keyframes to timeline widget and canvas for visual display and snapping."""
+        """Chuyển danh sách keyframe cho timeline widget và canvas để hiển thị trực quan và hít điểm."""
         self._keyframes = sorted(keyframes or [])
         self.canvas.set_keyframes(self._keyframes)
         if self._keyframes:
@@ -1269,13 +1281,13 @@ class TimelineWidget(QWidget):
         max_delta: float | None = None,
         force_closest: bool = False,
     ) -> float:
-        """Snap timestamp to closest keyframe.
+        """Hít mốc thời gian vào keyframe gần nhất.
         
         Args:
-            target_sec: Target timestamp in seconds.
-            max_delta: Maximum delta in seconds for snapping. If None, calculates dynamically
-                       based on timeline zoom (approx 16-18 pixels on screen).
-            force_closest: If True, snaps to closest keyframe regardless of distance.
+            target_sec: Mốc thời gian mục tiêu tính bằng giây.
+            max_delta: Khoảng lệch tối đa tính bằng giây để hít điểm. Nếu None, tự động tính
+                       dựa trên mức thu phóng timeline (khoảng 16-18 pixel trên màn hình).
+            force_closest: Nếu True, luôn hít vào keyframe gần nhất bất kể khoảng cách.
         """
         if not self._keyframes:
             return target_sec
@@ -1287,15 +1299,15 @@ class TimelineWidget(QWidget):
         return find_nearest_keyframe(target_sec, self._keyframes, mode="closest", max_delta=max_delta)
 
     def set_video_thumbnails(self, thumbnails: list[dict[str, Any]]):
-        """Pass video frame thumbnails to canvas."""
+        """Chuyển danh sách ảnh thu nhỏ của khung hình video cho canvas."""
         self.canvas.set_thumbnails(thumbnails)
 
     def set_audio_waveforms(self, waveforms: dict[int, list[float]]):
-        """Pass real audio waveform peaks to canvas."""
+        """Chuyển các đỉnh dạng sóng âm thanh thực cho canvas."""
         self.canvas.set_audio_waveforms(waveforms)
 
     def set_audio_waveform_stream(self, stream_index: int, peaks: list[float]):
-        """Pass a single stream's waveform peaks to canvas immediately."""
+        """Chuyển ngay các đỉnh dạng sóng của một luồng đơn cho canvas."""
         self.canvas.set_audio_waveform_stream(stream_index, peaks)
 
     def get_in_point(self) -> float:
@@ -1309,7 +1321,7 @@ class TimelineWidget(QWidget):
         return self._out_point_sec
 
     def set_in_point(self, in_sec: float):
-        """Programmatically set In point and synchronize canvas and labels."""
+        """Thiết lập điểm In bằng mã lệnh và đồng bộ hóa canvas cùng các nhãn thời gian."""
         self._in_point_sec = max(0.0, min(in_sec, self._out_point_sec - 0.05))
         for s_idx in self._track_cut_ranges:
             self._track_cut_ranges[s_idx] = (self._in_point_sec, self._out_point_sec)
@@ -1319,7 +1331,7 @@ class TimelineWidget(QWidget):
         self.in_point_changed.emit(self._in_point_sec)
 
     def set_out_point(self, out_sec: float):
-        """Programmatically set Out point and synchronize canvas and labels."""
+        """Thiết lập điểm Out bằng mã lệnh và đồng bộ hóa canvas cùng các nhãn thời gian."""
         self._out_point_sec = min(self._duration_sec, max(out_sec, self._in_point_sec + 0.05))
         for s_idx in self._track_cut_ranges:
             self._track_cut_ranges[s_idx] = (self._in_point_sec, self._out_point_sec)
@@ -1341,14 +1353,14 @@ class TimelineWidget(QWidget):
         return self._duration_sec
 
     def _get_fit_pps(self) -> float:
-        """Calculate pixels per second so entire video fits available canvas width."""
+        """Tính số pixel mỗi giây sao cho toàn bộ video vừa vặn với chiều rộng hiển thị của canvas."""
         avail_w = max(400, self.scroll_area.viewport().width() - 40)
         if self._duration_sec > 0:
             return max(0.05, avail_w / self._duration_sec)
         return 10.0
 
     def _get_max_pps(self, fit_pps: float) -> float:
-        """Sensible maximum zoom level (capped at 50 px/sec to prevent extreme over-magnification)."""
+        """Mức thu phóng tối đa hợp lý (giới hạn ở 50 px/giây để tránh phóng to quá mức)."""
         return max(fit_pps, min(50.0, max(fit_pps * 8.0, 25.0)))
 
     def _calc_pps_from_slider(self, val: int) -> float:
@@ -1359,11 +1371,11 @@ class TimelineWidget(QWidget):
         if val >= 100:
             return max_pps
         alpha = val / 100.0
-        # Smooth geometric / exponential scaling
+        # Thang tỉ lệ hàm mũ/hình học mượt mà
         return fit_pps * ((max_pps / fit_pps) ** alpha)
 
     def fit_to_width(self):
-        """Scale zoom so entire video fits available canvas width."""
+        """Thu phóng sao cho toàn bộ video vừa khít với chiều rộng canvas."""
         fit_pps = self._get_fit_pps()
         self.zoom_slider.blockSignals(True)
         self.zoom_slider.setValue(0)
@@ -1372,19 +1384,19 @@ class TimelineWidget(QWidget):
         self.scroll_area.horizontalScrollBar().setValue(0)
 
     def sync_zoom_with_speed(self, speed: float):
-        """Automatically adjust timeline zoom to match playback speed:
-        Slower speed -> Zoom in closer for frame-accurate inspection.
-        Normal / Fast speed -> Zoom out to fit for broad overview.
+        """Tự động điều chỉnh độ thu phóng của timeline cho khớp với tốc độ phát:
+        Tốc độ chậm -> Phóng to gần hơn để soi rõ từng khung hình.
+        Tốc độ chuẩn / nhanh -> Thu nhỏ để nhìn bao quát toàn bộ video.
         """
         if self._duration_sec <= 0:
             return
         if speed >= 1.0:
             target_val = 0
         else:
-            # 1.00x -> 0% (Fit To Width)
-            # 0.75x -> 33% (Zoom 1.33x)
-            # 0.50x -> 67% (Zoom 2x)
-            # 0.25x -> 100% (Zoom 4x, maximum detail)
+            # 1.00x -> 0% (Thu vừa màn hình)
+            # 0.75x -> 33% (Phóng to 1.33x)
+            # 0.50x -> 67% (Phóng to 2x)
+            # 0.25x -> 100% (Phóng to 4x, chi tiết tối đa)
             target_val = int(round((1.0 - speed) / 0.75 * 100.0))
             target_val = max(0, min(100, target_val))
 
@@ -1499,7 +1511,7 @@ class TimelineWidget(QWidget):
         self.lbl_cut_dur.setText(f"Thời lượng cắt: {format_timestamp(cut_dur)}")
 
     def _on_zoom_slider_changed(self, val: int):
-        # Anchor zoom around playhead if in view, otherwise center of current viewport
+        # Neo vị trí thu phóng xung quanh con trỏ phát nếu đang trong tầm nhìn, ngược lại neo vào giữa khung nhìn
         vp_w = self.scroll_area.viewport().width()
         sb = self.scroll_area.horizontalScrollBar()
         cur_scroll = sb.value()
@@ -1511,18 +1523,18 @@ class TimelineWidget(QWidget):
         pps = self._calc_pps_from_slider(val)
         self.canvas.set_zoom(pps)
 
-        # Re-center viewport around anchor
+        # Căn giữa lại khung nhìn quanh điểm neo
         new_anchor_x = self.canvas._sec_to_x(anchor_sec)
         new_scroll = max(0, int(round(new_anchor_x - vp_w / 2.0)))
         sb.setValue(new_scroll)
 
     def _adjust_zoom(self, delta_step: int):
-        """Adjust zoom slider by delta step (e.g. +10 or -10)."""
+        """Điều chỉnh thanh trượt thu phóng theo bước gia số (ví dụ +10 hoặc -10)."""
         new_val = max(0, min(100, self.zoom_slider.value() + int(delta_step)))
         self.zoom_slider.setValue(new_val)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # If slider is at 0 (Fit To Width), automatically keep fitting when window is resized / maximized
+        # Nếu thanh trượt ở mức 0 (Thu vừa màn hình), tự động duy trì vừa vặn khi cửa sổ thay đổi kích thước/phóng to
         if self.zoom_slider.value() == 0 and self._duration_sec > 0:
             self.fit_to_width()

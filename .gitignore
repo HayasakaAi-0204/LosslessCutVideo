@@ -7,6 +7,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.pyd
+*.pyo
 .Python
 env/
 venv/
@@ -14,9 +15,34 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+*.egg-info/
+.eggs/
 
-# --- Documentation, Readmes, Reports & Assignment Files ---
+# --- Heavy Compiled Binaries & Dynamic Libraries ---
+# (GitHub rejects files > 100MB; tools/ffmpeg.exe is ~138.5MB)
+*.exe
+*.dll
+*.so
+*.dylib
+*.bin
+tools/*
+!tools/.gitkeep
+
+# --- Packaging & Distribution (Not needed to run source code) ---
+build/
+dist/
+*.spec
+*.zip
+*.7z
+*.tar.gz
+*.rar
+build_exe.bat
+build_portable.py
+package_app.py
+
+# --- Documentation, Notes & Private Files ---
 *.md
+!README.md
 *.pdf
 *.docx
 *.doc
@@ -27,27 +53,13 @@ venv.bak/
 docs/
 .superpowers/
 
-# --- AI & Private Workspace Files ---
+# --- AI & Private Workspace Artifacts ---
 GEMINI.md
 .gemini/
 .system_generated/
 scratch/
 *.tmp
-
-# --- Packaging & Build Scripts (Not required to run source code) ---
-build/
-dist/
-*.spec
-*.zip
-*.7z
-*.tar.gz
-build_exe.bat
-build_portable.py
-package_app.py
-
-# --- Heavy Portable Binaries (FFmpeg/FFprobe binaries) ---
-tools/*
-!tools/.gitkeep
+*.bak
 
 # --- Logs, Temporary & Cache Files ---
 logs/
@@ -60,11 +72,12 @@ tmp/
 tests/
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# --- User Media, Test Outputs & Exports ---
+# --- User Media, Test Outputs & Video Exports ---
 *.mp4
 *.mkv
 *.mov
@@ -89,14 +102,6 @@ test_videos/
 *_snapshot_*.png
 *.snapshot.png
 
-# --- Keep Application Code & Runtime Assets ---
-!requirements.txt
-!main.py
-!src/
-!assets/
-!assets/*
-!tools/.gitkeep
-
 # --- OS & IDE Specific Files ---
 .vscode/
 .idea/
@@ -111,3 +116,14 @@ ehthumbs.db
 Thumbs.db
 [Dd]esktop.ini
 $RECYCLE.BIN/
+
+# --- Whitelist: Keep Application Code & Runtime Assets ---
+!requirements.txt
+!main.py
+!run.bat
+!README.md
+!src/
+!src/**
+!assets/
+!assets/**
+!tools/.gitkeep

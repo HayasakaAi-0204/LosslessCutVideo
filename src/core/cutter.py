@@ -1,9 +1,10 @@
-"""Lossless video cutting engine using FFmpeg Stream Copy.
+"""Engine cắt video Lossless sử dụng cơ chế FFmpeg Stream Copy.
 
-Ensures bit-for-bit quality preservation with zero re-encoding.
+Bảo toàn 100% chất lượng bit-for-bit nguyên bản, không tái mã hóa (0% re-encoding).
 """
 
 from datetime import datetime
+import os
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,7 @@ from src.core.config import get_ffmpeg_path
 
 
 def format_timestamp(seconds: float) -> str:
-    """Format seconds into HH:MM:SS.mmm string."""
+    """Định dạng số giây thành chuỗi thời gian dạng HH:MM:SS.mmm."""
     seconds = max(0.0, seconds)
     hrs = int(seconds // 3600)
     mins = int((seconds % 3600) // 60)
@@ -25,18 +26,18 @@ def find_nearest_keyframe(
     mode: str = "closest",
     max_delta: float | None = None,
 ) -> float:
-    """Find the nearest keyframe according to mode and optional distance constraint.
+    """Tìm mốc Keyframe (I-frame) gần nhất theo chế độ và giới hạn khoảng cách tùy chọn.
     
-    Args:
-        target_sec: Target timestamp in seconds.
-        keyframes: Sorted list of keyframe timestamps.
-        mode: 'closest' for minimum delta, 'prev' for largest keyframe <= target_sec,
-              'next' for smallest keyframe >= target_sec.
-        max_delta: Maximum acceptable distance in seconds. If closest candidate is further
-                   than max_delta, returns target_sec unchanged. None means no limit.
+    Tham số:
+        target_sec: Mốc thời gian mục tiêu tính bằng giây.
+        keyframes: Danh sách các mốc thời gian Keyframe đã được sắp xếp tăng dần.
+        mode: 'closest' (khoảng cách nhỏ nhất), 'prev' (Keyframe lớn nhất <= target_sec),
+              'next' (Keyframe nhỏ nhất >= target_sec).
+        max_delta: Khoảng cách tối đa chấp nhận được (giây). Nếu Keyframe gần nhất vượt quá
+                   max_delta, trả về target_sec ban đầu. None nghĩa là không giới hạn.
         
-    Returns:
-        Snapped timestamp in seconds.
+    Trả về:
+        Mốc thời gian bám dính (giây).
     """
     if not keyframes:
         return target_sec
@@ -58,8 +59,8 @@ def find_nearest_keyframe(
 
 
 def generate_default_output_name(input_path: str | Path, start_sec: float = 0.0, end_sec: float = 0.0) -> Path:
-    """Generate a safe, unique output file path using timestamp:
-    '<Stem>_<HH>h<MM>m<SS>s_<DD>-<MM>-<YYYY>.<suffix>'
+    """Sinh đường dẫn file đầu ra duy nhất, an toàn có gắn mốc thời gian:
+    '<TênGốc>_<HH>h<MM>m<SS>s_<DD>-<MM>-<YYYY>.<đuôi>'
     """
     p = Path(input_path).resolve()
     stem = p.stem
@@ -68,7 +69,7 @@ def generate_default_output_name(input_path: str | Path, start_sec: float = 0.0,
     output_filename = f"{stem}_{now_str}{suffix}"
     output_path = p.parent / output_filename
 
-    # If already exists, append counter
+    # Nếu file đã tồn tại, tự động thêm số đếm chống ghi đè
     counter = 1
     while output_path.exists():
         output_filename = f"{stem}_{now_str}_{counter}{suffix}"
@@ -94,28 +95,29 @@ def build_cut_command(
     mix_audio: bool = False,
     rotation: int | None = None,
 ) -> tuple[list[str], float, float]:
-    """Construct FFmpeg stream copy / smart hybrid cut command.
+    """Xây dựng câu lệnh FFmpeg Stream Copy bảo toàn 100% nguyên bản.
     
-    Args:
-        input_path: Path to source video.
-        output_path: Path to destination file.
-        start_sec: Desired start time in seconds.
-        end_sec: Desired end time in seconds.
-        snap_keyframe: If True, snap start_sec to the nearest keyframe.
-        keyframes: List of keyframe timestamps.
-        selected_stream_indices: List of all stream indices to include (video, audio, etc.).
-        selected_audio_indices: Legacy alias for backward compatibility.
-        track_ranges: Optional per-stream (in_sec, out_sec) mapping for independent track trimming.
-        stream_types: Optional mapping from stream_index to 'video' | 'audio'.
-        cut_mode: 'global' (all tracks synchronous) or 'per_track' (independent track trimming).
-        snap_mode: 'closest' (default) or 'prev'.
-        mix_audio: If True, merge all selected audio tracks into a single stream via amix.
+    Tham số:
+        input_path: Đường dẫn tới video nguồn.
+        output_path: Đường dẫn tới file xuất đích.
+        start_sec: Thời gian bắt đầu mong muốn (giây).
+        end_sec: Thời gian kết thúc mong muốn (giây).
+        snap_keyframe: Nếu True, tự động bám start_sec vào Keyframe gần nhất.
+        keyframes: Danh sách các mốc Keyframe.
+        selected_stream_indices: Danh sách stream index được chọn xuất (video, audio...).
+        selected_audio_indices: Alias tương thích ngược.
+        track_ranges: Tùy chọn phạm vi (in_sec, out_sec) cho từng track riêng lẻ.
+        stream_types: Tùy chọn ánh xạ từ stream_index sang 'video' | 'audio'.
+        cut_mode: 'global' (đồng bộ tất cả track) hoặc 'per_track'.
+        snap_mode: 'closest' (mặc định) hoặc 'prev'.
+        mix_audio: Nếu True, trộn các audio stream thành 1 stream duy nhất.
+        rotation: Góc xoay video (0, 90, 180, 270).
         
-    Returns:
-        tuple of (cmd_list, effective_start_sec, effective_end_sec)
+    Trả về:
+        tuple (danh_sách_lệnh_cmd, thời_gian_bắt_đầu_thực_tế, thời_gian_kết_thúc_thực_tế)
         
-    Raises:
-        ValueError: If arguments are invalid.
+    Ngoại lệ:
+        ValueError: Nếu tham số đầu vào không hợp lệ.
     """
     in_p = Path(input_path).resolve()
     out_p = Path(output_path).resolve()
@@ -135,7 +137,7 @@ def build_cut_command(
     effective_start = start_sec
     if snap_keyframe and keyframes:
         effective_start = find_nearest_keyframe(start_sec, keyframes, mode=snap_mode)
-        # If snapped start equals or exceeds end_sec, fall back to nearest keyframe strictly before end_sec
+        # Nếu mốc bám dính vượt quá end_sec, lùi về Keyframe lớn nhất đứng trước end_sec
         if effective_start >= end_sec:
             prev_candidates = [k for k in keyframes if k < end_sec]
             if prev_candidates:
@@ -150,7 +152,7 @@ def build_cut_command(
 
     ffmpeg_bin = get_ffmpeg_path()
 
-    # Determine stream mapping
+    # Xác định danh sách ánh xạ stream cần xuất
     target_streams = selected_stream_indices
     if target_streams is None and selected_audio_indices is not None:
         target_streams = [0] + selected_audio_indices
@@ -168,7 +170,7 @@ def build_cut_command(
 
     cut_dur = max(0.001, effective_end - effective_start)
 
-    # Pure 100% Lossless Stream Copy: All selected tracks share identical cut window bit-for-bit
+    # Stream Copy 100% Lossless: Mọi track được chọn chia sẻ chung một cửa sổ cắt bit-for-bit
     map_args: list[str] = []
     if sorted_streams is None:
         map_args = ["-map", "0"]
@@ -176,9 +178,25 @@ def build_cut_command(
         for s_idx in sorted_streams:
             map_args.extend(["-map", f"0:{s_idx}"])
 
+    # Kiểm tra xem có track video trong danh sách xuất hay không
+    has_video_out = True
+    if sorted_streams is not None:
+        has_video_out = any(_get_stype(s) == "video" for s in sorted_streams)
+
+    # Xoay video: Hỗ trợ display_rotation hiện đại (ma trận side data) và -metadata rotate
+    display_rot_args: list[str] = []
+    rot_val: int | None = None
+    if has_video_out and rotation is not None and out_p.suffix.lower() in (".mp4", ".mov", ".m4v", ".mkv"):
+        rot_val = int(rotation) % 360
+        if rot_val != 0:
+            # Trong FFmpeg, -display_rotation nhận góc quay ngược chiều kim đồng hồ (độ)
+            ccw_deg = (360 - rot_val) % 360
+            display_rot_args = ["-display_rotation:v:0", str(ccw_deg)]
+
     cmd = [
         str(ffmpeg_bin),
         "-y",
+        *display_rot_args,
         "-ss", f"{effective_start:.4f}",
         "-i", str(in_p),
         "-t", f"{cut_dur:.4f}",
@@ -186,13 +204,8 @@ def build_cut_command(
         *map_args,
         "-avoid_negative_ts", "make_zero",
     ]
-    # Add rotation metadata if applicable and video stream is present
-    has_video_out = True
-    if sorted_streams is not None:
-        has_video_out = any(_get_stype(s) == "video" for s in sorted_streams)
 
-    if has_video_out and rotation is not None and out_p.suffix.lower() in (".mp4", ".mov", ".m4v", ".mkv"):
-        rot_val = int(rotation) % 360
+    if has_video_out and rot_val is not None and out_p.suffix.lower() in (".mp4", ".mov", ".m4v", ".mkv"):
         cmd.extend(["-metadata:s:v:0", f"rotate={rot_val}"])
 
     if out_p.suffix.lower() in (".mp4", ".mov", ".m4v", ".m4a"):
@@ -207,9 +220,9 @@ def generate_snapshot_output_name(
     time_sec: float,
     extension: str = ".png",
 ) -> Path:
-    """Generate a collision-free filename for video frame snapshot.
+    """Sinh tên file chống trùng lặp cho ảnh chụp khung hình video.
     
-    Example: 'MyVideo_snapshot_01m25s340ms.png'
+    Ví dụ: 'MyVideo_snapshot_01m25s340ms.png'
     """
     p = Path(input_path).resolve()
     stem = p.stem
@@ -222,7 +235,7 @@ def generate_snapshot_output_name(
     base_name = f"{stem}_snapshot_{time_tag}"
 
     target_dir = p.parent
-    # Verify write access to source directory, fallback to Pictures if read-only
+    # Kiểm tra quyền ghi vào thư mục nguồn, tự động chuyển về Pictures nếu thư mục chỉ đọc
     try:
         test_file = target_dir / f".test_write_{time_tag}.tmp"
         test_file.touch(exist_ok=True)
@@ -250,9 +263,9 @@ def build_snapshot_command(
     time_sec: float,
     rotation: int = 0,
 ) -> list[str]:
-    """Construct FFmpeg command to extract a single frame at time_sec with exact frame accuracy and rotation.
+    """Xây dựng câu lệnh FFmpeg trích xuất 1 khung hình tại time_sec với độ nét gốc và xoay tương ứng.
     
-    If time_sec > 5s, fast seeks close to the target frame and fine seeks precisely to avoid full decode.
+    Nếu time_sec > 5s, thực hiện tua nhanh (Fast Seek) đến gần mốc rồi tua tinh (Fine Seek) để tối ưu tốc độ.
     """
     in_p = Path(input_path).resolve()
     out_p = Path(output_path).resolve()

@@ -1,7 +1,7 @@
-"""Unified Dark Theme Styling & Design System for Lossless Video Cutter."""
+"""Hệ thống giao diện Dark Theme đồng nhất cho ứng dụng Lossless Video Cutter."""
 
 # -----------------------------------------------------------------------------
-# Color Palette Constants
+# Hằng số bảng màu giao diện
 # -----------------------------------------------------------------------------
 COLOR_BG_BASE = "#16181d"
 COLOR_BG_CARD = "#1e222b"
@@ -19,8 +19,8 @@ COLOR_TEXT_HOVER = "#00d2d3"
 COLOR_TEXT_DISABLED = "#555e6d"
 
 # -----------------------------------------------------------------------------
-# 1. Standard Unified Action Button
-# (Used across Player controls, Tools, Snapshot, Rotate, Zoom Fit, Open File)
+# 1. Nút bấm thao tác chuẩn đồng nhất
+# (Dùng cho Điều khiển Player, Công cụ, Snapshot, Xoay, Zoom Fit, Mở File)
 # -----------------------------------------------------------------------------
 UNIFIED_BUTTON_STYLE = """
 QPushButton {
@@ -50,15 +50,19 @@ QPushButton:disabled {
 """
 
 # -----------------------------------------------------------------------------
-# 2. Unified Compact / Icon Stepper Button
-# (Used for Speed ➖/➕ and Zoom ➖/➕ buttons)
+# 2. Nút bấm icon thu gọn / Bộ tăng giảm bước
+# (Dùng cho Tốc độ ➖/➕ và Thu phóng ➖/➕)
 # -----------------------------------------------------------------------------
 UNIFIED_ICON_BUTTON_STYLE = """
 QPushButton {
     background-color: #252a34;
     color: #e2e8f0;
-    font-size: 12px;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 16px;
     font-weight: bold;
+    padding: 0px;
+    margin: 0px;
+    text-align: center;
     border-radius: 5px;
     border: 1px solid #3b4252;
 }
@@ -80,8 +84,8 @@ QPushButton:disabled {
 """
 
 # -----------------------------------------------------------------------------
-# 3. In & Out Point Buttons
-# (Unified base geometry with subtle emerald / crimson identity)
+# 3. Nút bấm đặt mốc In & Out
+# (Đồng nhất kích thước với điểm nhấn màu ngọc lục bảo / đỏ thẫm)
 # -----------------------------------------------------------------------------
 BUTTON_SET_IN_STYLE = """
 QPushButton {
@@ -138,8 +142,8 @@ QPushButton:disabled {
 """
 
 # -----------------------------------------------------------------------------
-# 4. Cancel / Close Button
-# (Unified base geometry with soft crimson warning hover)
+# 4. Nút Hủy / Đóng
+# (Đồng nhất kích thước với hiệu ứng cảnh báo màu đỏ nhẹ khi hover)
 # -----------------------------------------------------------------------------
 BUTTON_CANCEL_STYLE = """
 QPushButton {
@@ -169,7 +173,7 @@ QPushButton:disabled {
 """
 
 # -----------------------------------------------------------------------------
-# 5. Hero Export Button (Special CapCut Blue - Preserved uniquely per user request)
+# 5. Nút bấm Xuất Video nổi bật (Màu xanh dương phong cách CapCut đặc trưng)
 # -----------------------------------------------------------------------------
 BUTTON_EXPORT_STYLE = """
 QPushButton {
@@ -194,7 +198,7 @@ QPushButton:disabled {
 """
 
 # -----------------------------------------------------------------------------
-# 6. Global Window Stylesheet (Ensures full default consistency for unstyled buttons)
+# 6. Stylesheet toàn cục ứng dụng (Đảm bảo độ đồng nhất cho mọi widget)
 # -----------------------------------------------------------------------------
 GLOBAL_APP_QSS = f"""
 QMainWindow {{

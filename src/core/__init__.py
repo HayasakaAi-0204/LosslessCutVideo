@@ -1,2 +1,2 @@
-"""Core modules for video processing and configuration."""
+"""Các module lõi xử lý video và cấu hình hệ thống."""
 

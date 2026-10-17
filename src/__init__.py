@@ -1,2 +1,2 @@
-"""CutVideo application package."""
+"""Gói ứng dụng CutVideo."""
 
