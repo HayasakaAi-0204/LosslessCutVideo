@@ -18,6 +18,11 @@ venv.bak/
 *.egg-info/
 .eggs/
 
+# --- Temporary & Inspection Scripts ---
+inspect_*.py
+test_*.py
+!src/**
+
 # --- Heavy Compiled Binaries & Dynamic Libraries ---
 # (GitHub rejects files > 100MB; tools/ffmpeg.exe is ~138.5MB)
 *.exe
@@ -40,9 +45,13 @@ build_exe.bat
 build_portable.py
 package_app.py
 
-# --- Documentation, Notes & Private Files ---
-*.md
-!README.md
+# --- Reports, Documents, HTML Exports & Notes ---
+# (App is 100% PySide6, does not require HTML/Doc/Office files to run)
+*.html
+*.htm
+*_files/
+BAO_CAO*
+SO_SANH*
 *.pdf
 *.docx
 *.doc
@@ -51,6 +60,8 @@ package_app.py
 *.xlsx
 *.xls
 docs/
+*.md
+!README.md
 .superpowers/
 
 # --- AI & Private Workspace Artifacts ---
