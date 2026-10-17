@@ -61,7 +61,6 @@ SO_SANH*
 *.xls
 docs/
 *.md
-!README.md
 .superpowers/
 
 # --- AI & Private Workspace Artifacts ---
@@ -132,7 +131,6 @@ $RECYCLE.BIN/
 !requirements.txt
 !main.py
 !run.bat
-!README.md
 !src/
 !src/**
 !assets/
