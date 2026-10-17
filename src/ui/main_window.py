@@ -143,6 +143,7 @@ class MainWindow(QMainWindow):
         self.btn_open_file = QPushButton("📁 Mở Video...")
         self.btn_open_file.setStyleSheet(UNIFIED_BUTTON_STYLE)
         self.btn_open_file.setFixedHeight(32)
+        self.btn_open_file.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_open_file.clicked.connect(self._select_video_file)
 
         self.lbl_video_info = QLabel("Chưa chọn video (Kéo thả video vào bất kỳ đâu hoặc bấm 'Mở Video')")
@@ -151,20 +152,30 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self.btn_open_file)
         top_layout.addWidget(self.lbl_video_info, stretch=1)
 
-        # Bên phải: Nút Xuất Video xanh dương phong cách CapCut & Nút Hủy / Đóng video
+        # Bên phải: Nút Phím tắt, Nút Xuất Video xanh dương & Nút Hủy / Đóng video
+        self.btn_shortcuts = QPushButton("⌨️ Phím tắt (F1)")
+        self.btn_shortcuts.setToolTip("Xem danh sách phím tắt hữu ích (Phím F1 hoặc ?)")
+        self.btn_shortcuts.setStyleSheet(UNIFIED_BUTTON_STYLE)
+        self.btn_shortcuts.setFixedHeight(32)
+        self.btn_shortcuts.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_shortcuts.clicked.connect(self._show_shortcuts_dialog)
+
         self.btn_export = QPushButton("⚡ Xuất Video")
         self.btn_export.setStyleSheet(BUTTON_EXPORT_STYLE)
         self.btn_export.setFixedHeight(32)
+        self.btn_export.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_export.setEnabled(False)
         self.btn_export.clicked.connect(self._start_cut)
 
         self.btn_cancel = QPushButton("Hủy")
-        self.btn_cancel.setToolTip("Đóng video hiện tại và làm mới màn hình")
+        self.btn_cancel.setToolTip("Đóng video hiện tại và làm mới màn hình (Phím Esc)")
         self.btn_cancel.setStyleSheet(BUTTON_CANCEL_STYLE)
         self.btn_cancel.setFixedHeight(32)
+        self.btn_cancel.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self._close_current_video)
 
+        top_layout.addWidget(self.btn_shortcuts)
         top_layout.addWidget(self.btn_export)
         top_layout.addWidget(self.btn_cancel)
 
@@ -822,24 +833,113 @@ class MainWindow(QMainWindow):
             self._last_drop_time = now
             self._load_video(file_path)
 
+    def _show_shortcuts_dialog(self):
+        """Mở cửa sổ hiển thị danh sách phím tắt nhanh và phục hồi focus an toàn."""
+        if getattr(self, "_shortcuts_dialog_active", False):
+            return
+        self._shortcuts_dialog_active = True
+        try:
+            from src.ui.shortcuts_dialog import ShortcutsDialog
+            dialog = ShortcutsDialog(self)
+            dialog.exec()
+        finally:
+            self._shortcuts_dialog_active = False
+            # Phục hồi focus hoàn toàn cho MainWindow để các phím tắt tiếp tục hoạt động ngay
+            self.setFocus()
+            self.activateWindow()
+
     # Phím tắt bàn phím
     def keyPressEvent(self, event: QKeyEvent):
         key = event.key()
+        modifiers = event.modifiers()
+
+        # 1. Bật/Đóng bảng phím tắt: F1 hoặc ?
+        if key == Qt.Key.Key_F1 or key == Qt.Key.Key_Question:
+            self._show_shortcuts_dialog()
+            return
+
+        # 2. Mở video nhanh: Ctrl + O
+        if key == Qt.Key.Key_O and (modifiers & Qt.KeyboardModifier.ControlModifier):
+            self._select_video_file()
+            return
+
+        # 3. Xuất video nhanh: Ctrl + E hoặc Enter
+        if (key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) or
+            (key == Qt.Key.Key_E and (modifiers & Qt.KeyboardModifier.ControlModifier))):
+            if self.btn_export.isEnabled():
+                self._start_cut()
+            return
+
+        # 4. Hủy / Đóng video hiện tại: Escape
+        if key == Qt.Key.Key_Escape:
+            if self._current_video_path and self.btn_cancel.isEnabled():
+                self._close_current_video()
+            return
+
+        # 5. Phát / Tạm dừng video
         if key == Qt.Key.Key_Space:
             self.player_widget.play_pause()
-        elif key == Qt.Key.Key_I:
+            return
+
+        # 6. Đặt mốc cắt In / Out
+        if key == Qt.Key.Key_I:
             self.timeline_widget._set_in_current()
-        elif key == Qt.Key.Key_O:
+            return
+        if key == Qt.Key.Key_O:
             self.timeline_widget._set_out_current()
-        elif key == Qt.Key.Key_BracketLeft:
+            return
+
+        # 7. Tua khung hình (Left / Right / Comma / Period)
+        if key == Qt.Key.Key_Left:
+            if modifiers & Qt.KeyboardModifier.ControlModifier:
+                self.player_widget.step_keyframe(-1)
+            else:
+                self.player_widget.step_frame(-1)
+            return
+        if key == Qt.Key.Key_Right:
+            if modifiers & Qt.KeyboardModifier.ControlModifier:
+                self.player_widget.step_keyframe(1)
+            else:
+                self.player_widget.step_frame(1)
+            return
+        if key == Qt.Key.Key_Comma:
+            self.player_widget.step_frame(-1)
+            return
+        if key == Qt.Key.Key_Period:
+            self.player_widget.step_frame(1)
+            return
+
+        # 8. Nhảy Keyframe: J / L
+        if key == Qt.Key.Key_J:
+            self.player_widget.step_keyframe(-1)
+            return
+        if key == Qt.Key.Key_L:
+            self.player_widget.step_keyframe(1)
+            return
+
+        # 9. Tốc độ phát video
+        if key == Qt.Key.Key_BracketLeft:
             self.player_widget.change_speed(-0.25)
-        elif key == Qt.Key.Key_BracketRight:
+            return
+        if key == Qt.Key.Key_BracketRight:
             self.player_widget.change_speed(0.25)
-        elif key == Qt.Key.Key_R and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            return
+        if key == Qt.Key.Key_R and (modifiers & Qt.KeyboardModifier.ControlModifier):
             self.player_widget.rotate_90()
-        elif key == Qt.Key.Key_R:
+            return
+        if key == Qt.Key.Key_R:
             self.player_widget.reset_speed()
-        elif key == Qt.Key.Key_C or (key == Qt.Key.Key_S and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            return
+
+        # 10. Chụp ảnh khung hình
+        if key == Qt.Key.Key_C or (key == Qt.Key.Key_S and (modifiers & Qt.KeyboardModifier.ControlModifier)):
             self._take_snapshot()
-        else:
-            super().keyPressEvent(event)
+            return
+
+        super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        """Dọn dẹp và giải phóng tài nguyên an toàn khi đóng ứng dụng."""
+        if hasattr(self, "player_widget") and self.player_widget:
+            self.player_widget.cleanup()
+        super().closeEvent(event)
