@@ -60,6 +60,7 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
         tags = s.get("tags") or {}
 
         bitrate_raw = s.get("bit_rate") or tags.get("BPS") or tags.get("BPS-eng")
+        bitrate_bps = safe_float(bitrate_raw, 0.0)
         bitrate_str = format_bitrate(bitrate_raw)
         title = tags.get("title") or tags.get("handler_name") or ""
         lang = tags.get("language") or "und"
@@ -87,6 +88,7 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
                 "codec_name": codec_name,
                 "details": details,
                 "bitrate": bitrate_str,
+                "bitrate_bps": bitrate_bps,
                 "title": title,
                 "language": lang,
             })
@@ -106,6 +108,7 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
                 "codec": codec_name,
                 "details": details,
                 "bitrate": bitrate_str,
+                "bitrate_bps": bitrate_bps,
                 "title": title,
                 "language": lang,
             })
@@ -121,6 +124,7 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
                 "codec": codec_name,
                 "details": "Subtitles",
                 "bitrate": bitrate_str,
+                "bitrate_bps": bitrate_bps,
                 "title": title,
                 "language": lang,
             })
@@ -135,6 +139,7 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
                 "codec": codec_name,
                 "details": "",
                 "bitrate": bitrate_str,
+                "bitrate_bps": bitrate_bps,
                 "title": title,
                 "language": lang,
             })
@@ -192,10 +197,16 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
                     except Exception:
                         pass
 
+    file_size = int(safe_float(format_info.get("size", 0)))
+    fmt_bitrate_val = safe_float(format_info.get("bit_rate"), 0.0)
+    if fmt_bitrate_val <= 0.0 and duration > 0 and file_size > 0:
+        fmt_bitrate_val = (file_size * 8.0) / duration
+
     return {
         "duration": duration,
-        "size": int(safe_float(format_info.get("size", 0))),
+        "size": file_size,
         "format_name": format_info.get("format_name", ""),
+        "format_bitrate": fmt_bitrate_val,
         "video_codec": video_codec,
         "width": width,
         "height": height,
@@ -254,7 +265,7 @@ def probe_video_info(video_path: str | Path) -> dict[str, Any]:
     cmd = [
         str(ffprobe_bin),
         "-v", "error",
-        "-show_entries", "format=duration,size,format_name",
+        "-show_entries", "format=duration,size,format_name,bit_rate",
         "-show_streams",
         "-of", "json",
         str(path),

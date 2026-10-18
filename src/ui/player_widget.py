@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.core.config import get_project_root, has_mpv, has_hardware_av1_decode
-from src.ui.styles import UNIFIED_BUTTON_STYLE, UNIFIED_ICON_BUTTON_STYLE
+from src.ui.styles import UNIFIED_BUTTON_STYLE, UNIFIED_ICON_BUTTON_STYLE, BUTTON_HW_STYLE, BUTTON_SW_STYLE
 
 SPEED_PRESETS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
 
@@ -143,6 +143,7 @@ class PlayerWidget(QWidget):
     speed_changed = Signal(float)   # Tốc độ phát (0.25 .. 2.0)
     snapshot_requested = Signal()
     rotation_changed = Signal(int)
+    decode_mode_changed = Signal(str)  # "hw" hoặc "sw"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -159,6 +160,9 @@ class PlayerWidget(QWidget):
         self._current_pos_ms: int = 0
         self._preview_worker = None
         self._engine_type: str = "qt"  # "mpv" hoặc "qt"
+        self._decode_mode: str = "hw"  # "hw" (Phần cứng GPU) hoặc "sw" (Phần mềm CPU)
+        self._user_forced_decode_mode: str | None = None
+        self._current_codec: str = ""
 
         self._qt_player = None
         self._qt_audio_output = None
@@ -370,6 +374,15 @@ class PlayerWidget(QWidget):
         self.btn_rotate.setFixedHeight(30)
         self.btn_rotate.clicked.connect(self.rotate_90)
 
+        # Nút chuyển đổi H/W và S/W (Giải mã phần cứng GPU vs giải mã phần mềm CPU)
+        self.btn_hw_sw = QPushButton("*H/W")
+        self.btn_hw_sw.setToolTip("Giải mã phần cứng (GPU) - Click để chuyển sang S/W (CPU an toàn)")
+        self.btn_hw_sw.setEnabled(False)
+        self.btn_hw_sw.setStyleSheet(BUTTON_HW_STYLE)
+        self.btn_hw_sw.setFixedHeight(30)
+        self.btn_hw_sw.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_hw_sw.clicked.connect(self.toggle_hw_sw)
+
         controls_layout.addWidget(self.btn_prev_kf)
         controls_layout.addWidget(self.btn_step_back)
         controls_layout.addWidget(self.btn_play_pause)
@@ -378,6 +391,7 @@ class PlayerWidget(QWidget):
         controls_layout.addSpacing(6)
         controls_layout.addWidget(self.btn_snapshot)
         controls_layout.addWidget(self.btn_rotate)
+        controls_layout.addWidget(self.btn_hw_sw)
         controls_layout.addStretch()
         controls_layout.addWidget(self.lbl_speed)
         controls_layout.addWidget(self.btn_speed_down)
@@ -507,18 +521,10 @@ class PlayerWidget(QWidget):
         except Exception:
             pass
 
-        if not getattr(self, "_retried_cpu_decode", False):
-            self._retried_cpu_decode = True
-            os.environ["QT_FFMPEG_DECODING_HW_DEVICE_TYPES"] = ""
-            if self._qt_player:
-                self._qt_player.stop()
-            if getattr(self, "_current_file_path", None) and self._current_file_path.is_file():
-                url = QUrl.fromLocalFile(str(self._current_file_path))
-                if self._qt_player:
-                    self._qt_player.setSource(url)
-                    if self._current_pos_ms > 0:
-                        self._qt_player.setPosition(self._current_pos_ms)
-                return
+        if self._decode_mode == "hw":
+            print("[PlayerWidget] Gặp lỗi giải mã phần cứng GPU, tự động chuyển đổi an toàn sang S/W (CPU)...")
+            self.set_decode_mode("sw", reload=True, user_action=False)
+            return
 
         self._player_failed = True
         if self.is_video_enabled():
@@ -536,7 +542,7 @@ class PlayerWidget(QWidget):
 
     def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus):
         if status == QMediaPlayer.MediaStatus.InvalidMedia:
-            if not getattr(self, "_retried_cpu_decode", False):
+            if self._decode_mode == "hw":
                 self._on_player_error(QMediaPlayer.Error.FormatError, "Tự động kích hoạt bộ giải mã CPU an toàn")
                 return
             self._on_player_error(QMediaPlayer.Error.FormatError, "Hệ thống không hỗ trợ định dạng này.")
@@ -602,6 +608,114 @@ class PlayerWidget(QWidget):
         else:
             self.btn_rotate.setText(f"⟳ Xoay: {rot}°")
 
+    def _update_hw_sw_button_ui(self):
+        """Cập nhật giao diện nhãn và màu sắc của nút H/W hoặc S/W theo phong cách PotPlayer."""
+        if self._decode_mode == "hw":
+            self.btn_hw_sw.setText("*H/W")
+            self.btn_hw_sw.setStyleSheet(BUTTON_HW_STYLE)
+            self.btn_hw_sw.setToolTip("Giải mã phần cứng GPU (*H/W) - Click hoặc nhấn H để chuyển sang CPU (S/W an toàn)")
+        else:
+            self.btn_hw_sw.setText("S/W")
+            self.btn_hw_sw.setStyleSheet(BUTTON_SW_STYLE)
+            self.btn_hw_sw.setToolTip("Giải mã phần mềm CPU (S/W) - Click hoặc nhấn H để chuyển sang GPU (*H/W)")
+
+    def get_decode_mode(self) -> str:
+        """Trả về chế độ giải mã hiện tại ('hw' hoặc 'sw')."""
+        return self._decode_mode
+
+    def is_playing(self) -> bool:
+        """Kiểm tra trạng thái đang phát (True) hay tạm dừng/dừng (False)."""
+        if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
+            return not bool(getattr(self.mpv_player, "pause", True))
+        if hasattr(self, "_qt_player") and self._qt_player:
+            return self._qt_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        return False
+
+    def toggle_hw_sw(self):
+        """Chuyển đổi qua lại giữa giải mã phần cứng (*H/W) và giải mã phần mềm (S/W)."""
+        if not self._current_file_path:
+            return
+        new_mode = "sw" if self._decode_mode == "hw" else "hw"
+        self.set_decode_mode(new_mode, reload=True, user_action=True)
+
+    def set_decode_mode(self, mode: str, reload: bool = True, user_action: bool = False):
+        """Thiết lập chế độ giải mã phần cứng ('hw') hoặc phần mềm ('sw').
+
+        Args:
+            mode: 'hw' (GPU) hoặc 'sw' (CPU).
+            reload: Nếu True và đang mở video, nạp lại luồng giải mã tại vị trí hiện tại.
+            user_action: Nếu True, đánh dấu người dùng chủ động ép chọn chế độ này.
+        """
+        mode = str(mode or "").strip().lower()
+        if mode not in ("hw", "sw"):
+            return
+
+        self._decode_mode = mode
+        if user_action:
+            self._user_forced_decode_mode = mode
+
+        self._update_hw_sw_button_ui()
+        self.decode_mode_changed.emit(self._decode_mode)
+
+        # Cấu hình biến môi trường và thiết lập engine phát
+        if mode == "sw":
+            os.environ["QT_FFMPEG_DECODING_HW_DEVICE_TYPES"] = "none"
+            if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
+                try:
+                    self.mpv_player.hwdec = "no"
+                except Exception:
+                    try:
+                        self.mpv_player["hwdec"] = "no"
+                    except Exception:
+                        pass
+        else:
+            os.environ.pop("QT_FFMPEG_DECODING_HW_DEVICE_TYPES", None)
+            if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
+                try:
+                    self.mpv_player.hwdec = "auto-safe"
+                except Exception:
+                    try:
+                        self.mpv_player["hwdec"] = "auto-safe"
+                    except Exception:
+                        pass
+
+        if reload and self._current_file_path and self._current_file_path.is_file():
+            saved_pos = self._current_pos_ms
+            is_play = self.is_playing()
+            file_str = str(self._current_file_path)
+
+            self._player_failed = False
+            if self.is_video_enabled():
+                self.viewport_stack.setCurrentIndex(0)
+
+            if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
+                try:
+                    self.mpv_player.pause = not is_play
+                    if hasattr(self.mpv_player, "play"):
+                        self.mpv_player.play(file_str)
+                    else:
+                        self.mpv_player.command("loadfile", file_str, "replace")
+                    if saved_pos > 0:
+                        self.seek(saved_pos)
+                    return
+                except Exception as e:
+                    print(f"[PlayerWidget] Lỗi nạp lại chế độ {mode} qua mpv: {e}")
+
+            # Dự phòng bằng Qt Multimedia
+            if self._qt_player:
+                try:
+                    self._qt_player.stop()
+                    url = QUrl.fromLocalFile(file_str)
+                    self._qt_player.setSource(url)
+                    if saved_pos > 0:
+                        self._qt_player.setPosition(saved_pos)
+                    if is_play:
+                        self._qt_player.play()
+                    else:
+                        self._qt_player.pause()
+                except Exception as e:
+                    print(f"[PlayerWidget] Lỗi nạp lại chế độ {mode} qua Qt: {e}")
+
     def load_video(self, file_path: str | Path, keyframes: list[float] | None = None, fps: float = 30.0, codec: str = ""):
         """Nạp file video vào media player và hiển thị khung hình đầu tiên."""
         self._current_file_path = Path(file_path).resolve()
@@ -614,7 +728,23 @@ class PlayerWidget(QWidget):
         self.set_video_enabled(True)
         self.btn_snapshot.setEnabled(True)
         self.btn_rotate.setEnabled(True)
+        self.btn_hw_sw.setEnabled(True)
         self._pending_first_frame = True
+
+        # Pre-flight Check:
+        # 1. Nếu người dùng đã tự tay chuyển chế độ (*H/W hoặc S/W), tôn trọng lựa chọn đó.
+        # 2. Nếu là AV1: Kiểm tra an toàn GPU. Nếu GPU không hỗ trợ giải mã phần cứng AV1 chắc chắn 100%
+        #    hoặc là laptop Optimus có iGPU Intel cũ -> Fail-Safe MẶC ĐỊNH S/W (CPU libdav1d)
+        #    để ngăn chặn triệt để lỗi treo driver màn hình 2 giây (TDR).
+        # 3. Với các codec khác (H.264, HEVC, VP9...): Mặc định H/W (GPU) tối ưu hiệu năng.
+        if self._user_forced_decode_mode:
+            chosen_mode = self._user_forced_decode_mode
+        elif self._current_codec in ("av1", "av01"):
+            chosen_mode = "hw" if has_hardware_av1_decode() else "sw"
+        else:
+            chosen_mode = "hw"
+
+        self.set_decode_mode(chosen_mode, reload=False, user_action=False)
 
         if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
             try:
@@ -642,14 +772,6 @@ class PlayerWidget(QWidget):
                 self._player_failed = True
 
         # Dự phòng bằng Qt Multimedia
-        if self._current_codec in ("av1", "av01"):
-            if not has_hardware_av1_decode():
-                os.environ["QT_FFMPEG_DECODING_HW_DEVICE_TYPES"] = ""
-            else:
-                os.environ.pop("QT_FFMPEG_DECODING_HW_DEVICE_TYPES", None)
-        else:
-            os.environ.pop("QT_FFMPEG_DECODING_HW_DEVICE_TYPES", None)
-
         if self._qt_player:
             url = QUrl.fromLocalFile(str(self._current_file_path))
             self._qt_player.setSource(url)
@@ -687,6 +809,13 @@ class PlayerWidget(QWidget):
         self.btn_snapshot.setEnabled(False)
         self.btn_rotate.setEnabled(False)
         self.btn_rotate.setText("⟳ Xoay: 0°")
+        self.btn_hw_sw.setEnabled(False)
+        self.btn_hw_sw.setText("*H/W")
+        self.btn_hw_sw.setStyleSheet(BUTTON_HW_STYLE)
+        self._decode_mode = "hw"
+        self._user_forced_decode_mode = None
+        self._current_codec = ""
+        os.environ.pop("QT_FFMPEG_DECODING_HW_DEVICE_TYPES", None)
         self.set_video_enabled(True)
         if hasattr(self, "lbl_fallback_preview"):
             self.lbl_fallback_preview.clear()

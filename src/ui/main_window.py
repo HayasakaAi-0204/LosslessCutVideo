@@ -152,13 +152,29 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self.btn_open_file)
         top_layout.addWidget(self.lbl_video_info, stretch=1)
 
-        # Bên phải: Nút Phím tắt, Nút Xuất Video xanh dương & Nút Hủy / Đóng video
+        # Bên phải: Nút Phím tắt, Dung lượng ước tính, Nút Xuất Video xanh dương & Nút Hủy / Đóng video
         self.btn_shortcuts = QPushButton("⌨️ Phím tắt (F1)")
         self.btn_shortcuts.setToolTip("Xem danh sách phím tắt hữu ích (Phím F1 hoặc ?)")
         self.btn_shortcuts.setStyleSheet(UNIFIED_BUTTON_STYLE)
         self.btn_shortcuts.setFixedHeight(32)
         self.btn_shortcuts.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_shortcuts.clicked.connect(self._show_shortcuts_dialog)
+
+        self.lbl_estimated_size = QLabel("")
+        self.lbl_estimated_size.setStyleSheet("""
+            QLabel {
+                color: #00d2d3;
+                background-color: #252a34;
+                border: 1px solid #3b4252;
+                border-radius: 5px;
+                padding: 4px 10px;
+                font-family: 'Segoe UI', monospace;
+                font-weight: bold;
+                font-size: 12px;
+            }
+        """)
+        self.lbl_estimated_size.setToolTip("Dung lượng ước tính của file sau khi xuất (100% Lossless)")
+        self.lbl_estimated_size.setVisible(False)
 
         self.btn_export = QPushButton("⚡ Xuất Video")
         self.btn_export.setStyleSheet(BUTTON_EXPORT_STYLE)
@@ -176,6 +192,7 @@ class MainWindow(QMainWindow):
         self.btn_cancel.clicked.connect(self._close_current_video)
 
         top_layout.addWidget(self.btn_shortcuts)
+        top_layout.addWidget(self.lbl_estimated_size)
         top_layout.addWidget(self.btn_export)
         top_layout.addWidget(self.btn_cancel)
 
@@ -201,15 +218,12 @@ class MainWindow(QMainWindow):
         self.timeline_widget.seek_requested.connect(self.player_widget.seek)
         self.timeline_widget.tracks_changed.connect(self._on_timeline_tracks_changed)
         self.timeline_widget.track_selected.connect(self._on_timeline_track_selected)
-        self.timeline_widget.in_point_changed.connect(
-            lambda in_sec: self.player_widget.set_cut_range(in_sec, self.timeline_widget.get_out_point())
-        )
-        self.timeline_widget.out_point_changed.connect(
-            lambda out_sec: self.player_widget.set_cut_range(self.timeline_widget.get_in_point(), out_sec)
-        )
+        self.timeline_widget.in_point_changed.connect(self._on_in_point_changed)
+        self.timeline_widget.out_point_changed.connect(self._on_out_point_changed)
         self.player_widget.speed_changed.connect(self.timeline_widget.sync_zoom_with_speed)
         self.player_widget.snapshot_requested.connect(self._take_snapshot)
         self.player_widget.rotation_changed.connect(self._on_rotation_changed)
+        self.player_widget.decode_mode_changed.connect(self._on_decode_mode_changed)
 
         # ---------------------------------------------------------------------
         # 4. Thanh trạng thái tinh gọn & Tiến trình ở đáy
@@ -355,6 +369,7 @@ class MainWindow(QMainWindow):
 
             # 2. Nạp các track vào Timeline đa track CapCut
             self.timeline_widget.set_tracks(tracks)
+            self.timeline_widget.set_video_info(self._video_info)
             self.timeline_widget.set_duration(int(dur_sec * 1000))
 
             # 3. Nạp video vào khung nhìn trình phát và khởi tạo phạm vi xem trước
@@ -366,6 +381,7 @@ class MainWindow(QMainWindow):
                 self.timeline_widget.get_selected_stream_indices(),
                 tracks,
             )
+            self._update_estimated_size_display()
 
             self.lbl_status.setText("Đã nạp video. Đang quét Keyframe trong nền...")
 
@@ -396,6 +412,42 @@ class MainWindow(QMainWindow):
             self.btn_export.setText("🎵 Xuất Âm Thanh")
         else:
             self.btn_export.setText("⚡ Xuất Video")
+
+        self._update_estimated_size_display()
+
+    def _on_in_point_changed(self, in_sec: float):
+        self.player_widget.set_cut_range(in_sec, self.timeline_widget.get_out_point())
+        self._update_estimated_size_display()
+
+    def _on_out_point_changed(self, out_sec: float):
+        self.player_widget.set_cut_range(self.timeline_widget.get_in_point(), out_sec)
+        self._update_estimated_size_display()
+
+    def _update_estimated_size_display(self):
+        """Cập nhật nhãn dung lượng ước tính cạnh nút Xuất Video."""
+        if not self._current_video_path or not self._video_info:
+            self.lbl_estimated_size.setVisible(False)
+            return
+
+        in_sec = self.timeline_widget.get_in_point()
+        out_sec = self.timeline_widget.get_out_point()
+        cut_dur = max(0.0, out_sec - in_sec)
+
+        active_indices = self.timeline_widget.get_selected_stream_indices()
+        from src.core.cutter import estimate_output_file_size
+        bytes_val, size_str = estimate_output_file_size(
+            cut_dur,
+            self._video_info,
+            active_indices,
+        )
+
+        if cut_dur > 0 and bytes_val > 0:
+            self.lbl_estimated_size.setText(f"💾 {size_str}")
+            self.lbl_estimated_size.setToolTip(f"Dung lượng ước tính file xuất: {size_str} (Thời lượng: {cut_dur:.2f}s)")
+            self.lbl_estimated_size.setVisible(True)
+            self.btn_export.setToolTip(f"Xuất đoạn video đã chọn (Ước tính: {size_str})")
+        else:
+            self.lbl_estimated_size.setVisible(False)
 
     def _on_timeline_track_selected(self, stream_index: int):
         """Hàm phản hồi khi người dùng nhấp/chọn một track trên timeline."""
@@ -575,6 +627,33 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # Kiểm tra dung lượng ổ đĩa đích còn trống để bảo vệ file và tránh tràn đĩa
+        try:
+            import shutil
+            from src.core.cutter import estimate_output_file_size, format_file_size
+            dest_dir = chosen_path.parent
+            _, _, free_bytes = shutil.disk_usage(str(dest_dir))
+            active_streams = self.timeline_widget.get_selected_stream_indices()
+            cut_duration_pre = max(0.0, out_sec - in_sec)
+            est_bytes, est_str = estimate_output_file_size(cut_duration_pre, self._video_info, active_streams)
+            safety_margin = 50 * 1024 * 1024  # 50 MB đệm an toàn
+            if est_bytes > 0 and free_bytes < (est_bytes + safety_margin):
+                free_str = format_file_size(free_bytes)
+                reply = QMessageBox.warning(
+                    self,
+                    "Cảnh báo bộ nhớ đĩa",
+                    f"Ổ đĩa lưu trữ ({dest_dir.drive or dest_dir}) chỉ còn trống khoảng {free_str}, "
+                    f"trong khi file xuất ước tính cần {est_str}.\n\n"
+                    f"Quá trình xuất file có thể bị gián đoạn hoặc hỏng file do tràn ổ cứng.\n"
+                    f"Bạn có muốn tiếp tục xuất không?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply == QMessageBox.StandardButton.No:
+                    return
+        except Exception:
+            pass
+
         try:
             cmd, eff_start, eff_end = build_cut_command(
                 input_path=self._current_video_path,
@@ -632,6 +711,8 @@ class MainWindow(QMainWindow):
         self.btn_export.setText("⚡ Xuất Video")
         self.btn_export.setEnabled(False)
         self.btn_cancel.setEnabled(False)
+        self.lbl_estimated_size.setVisible(False)
+        self.lbl_estimated_size.setText("")
 
         # 5. Xóa sạch khung nhìn player và timeline
         self.player_widget.clear_video()
@@ -707,6 +788,10 @@ class MainWindow(QMainWindow):
         label_map = {0: "0° (Gốc)", 90: "90° (Dọc)", 180: "180° (Lộn ngược)", 270: "270° (Dọc ngược)"}
         lbl = label_map.get(rot % 360, f"{rot}°")
         self.lbl_status.setText(f"⟳ Đã chọn góc xoay: {lbl} (Áp dụng khi xuất video & chụp ảnh)")
+
+    def _on_decode_mode_changed(self, mode: str):
+        label = "Phần cứng GPU (*H/W)" if mode == "hw" else "Phần mềm CPU (S/W - an toàn)"
+        self.lbl_status.setText(f"Chế độ giải mã video: {label}")
 
     def _on_snapshot_success(self, output_path: str, time_sec: float):
         p = Path(output_path)
@@ -934,6 +1019,11 @@ class MainWindow(QMainWindow):
         # 10. Chụp ảnh khung hình
         if key == Qt.Key.Key_C or (key == Qt.Key.Key_S and (modifiers & Qt.KeyboardModifier.ControlModifier)):
             self._take_snapshot()
+            return
+
+        # 11. Chuyển đổi giải mã phần cứng GPU và CPU (H/W ↔ S/W)
+        if key == Qt.Key.Key_H and not (modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)):
+            self.player_widget.toggle_hw_sw()
             return
 
         super().keyPressEvent(event)

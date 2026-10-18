@@ -240,3 +240,63 @@ QToolTip {{
 }}
 """
 
+# -----------------------------------------------------------------------------
+# 7. Nút trạng thái giải mã H/W (GPU) và S/W (CPU) phong cách PotPlayer
+# -----------------------------------------------------------------------------
+BUTTON_HW_STYLE = """
+QPushButton {
+    background-color: #252a34;
+    color: #f1c40f;
+    font-family: 'Segoe UI', monospace;
+    font-weight: bold;
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 5px;
+    border: 1px solid #f1c40f;
+}
+QPushButton:hover {
+    background-color: #2f3644;
+    color: #f39c12;
+    border-color: #f39c12;
+}
+QPushButton:pressed {
+    background-color: #1c2028;
+    color: #d68910;
+    border-color: #d68910;
+}
+QPushButton:disabled {
+    background-color: #1a1e26;
+    color: #555e6d;
+    border-color: #262c37;
+}
+"""
+
+BUTTON_SW_STYLE = """
+QPushButton {
+    background-color: #252a34;
+    color: #00d2d3;
+    font-family: 'Segoe UI', monospace;
+    font-weight: bold;
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 5px;
+    border: 1px solid #00d2d3;
+}
+QPushButton:hover {
+    background-color: #2f3644;
+    color: #00ffff;
+    border-color: #00ffff;
+}
+QPushButton:pressed {
+    background-color: #1c2028;
+    color: #00b4b5;
+    border-color: #00b4b5;
+}
+QPushButton:disabled {
+    background-color: #1a1e26;
+    color: #555e6d;
+    border-color: #262c37;
+}
+"""
+
+

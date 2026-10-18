@@ -177,6 +177,7 @@ class ShortcutsDialog(QDialog):
             ("Nhảy nhanh Keyframe (phím tắt LosslessCut)", [["J"], ["L"]]),
             ("Tăng / Giảm tốc độ phát (0.25x – 2.00x)", [["["], ["]"]]),
             ("Đặt lại tốc độ phát về 1.00x chuẩn", [["R"]]),
+            ("Chuyển đổi giải mã phần cứng GPU và CPU (*H/W ↔ S/W)", [["H"]]),
         ]
         container_layout.addWidget(
             ShortcutCategoryCard("Điều Khiển Phát & Tua Video", "🎬", playback_shortcuts, container)

@@ -922,6 +922,7 @@ class TimelineWidget(QWidget):
         self._selected_stream_index: int | None = None
         self._track_cut_ranges: dict[int, tuple[float, float]] = {}
         self._keyframes: list[float] = []
+        self._video_info: dict[str, Any] = {}
 
         self._setup_ui()
 
@@ -1178,6 +1179,7 @@ class TimelineWidget(QWidget):
         self._cut_mode = "global"
 
         self._keyframes = []
+        self._video_info = {}
         self.canvas.clear_preview_data()
         self.canvas.set_cut_mode("global")
         self.canvas.set_selected_stream(None)
@@ -1185,6 +1187,11 @@ class TimelineWidget(QWidget):
         self.canvas.set_tracks([], set())
         self.canvas.set_duration(0.0)
         self.headers_widget.set_tracks([], set())
+        self._update_time_labels()
+
+    def set_video_info(self, info: dict[str, Any]):
+        """Cung cấp siêu dữ liệu video để tính toán dung lượng ước tính theo thời gian thực."""
+        self._video_info = dict(info or {})
         self._update_time_labels()
 
     def set_duration(self, duration_ms: int):
@@ -1508,7 +1515,16 @@ class TimelineWidget(QWidget):
         self.lbl_out_val.setText(f"Out: {format_timestamp(act_out)}")
 
         cut_dur = max(0.0, act_out - act_in)
-        self.lbl_cut_dur.setText(f"Thời lượng cắt: {format_timestamp(cut_dur)}")
+        if self._video_info and cut_dur > 0:
+            from src.core.cutter import estimate_output_file_size
+            _, size_str = estimate_output_file_size(
+                cut_dur,
+                self._video_info,
+                self._active_stream_indices,
+            )
+            self.lbl_cut_dur.setText(f"Thời lượng cắt: {format_timestamp(cut_dur)} ({size_str})")
+        else:
+            self.lbl_cut_dur.setText(f"Thời lượng cắt: {format_timestamp(cut_dur)}")
 
     def _on_zoom_slider_changed(self, val: int):
         # Neo vị trí thu phóng xung quanh con trỏ phát nếu đang trong tầm nhìn, ngược lại neo vào giữa khung nhìn

@@ -20,6 +20,104 @@ def format_timestamp(seconds: float) -> str:
     return f"{hrs:02d}:{mins:02d}:{secs:06.3f}"
 
 
+def format_file_size(size_bytes: float) -> str:
+    """Định dạng số byte thành chuỗi kích thước dễ đọc (B, KB, MB, GB)."""
+    if size_bytes <= 0:
+        return "0 B"
+    if size_bytes < 1024:
+        return f"{size_bytes:.0f} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    else:
+        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+
+
+def estimate_output_file_size(
+    cut_duration: float,
+    video_info: dict[str, Any] | None,
+    active_stream_indices: list[int] | set[int] | None = None,
+) -> tuple[float, str]:
+    """Ước tính dung lượng file xuất ra (bytes và chuỗi hiển thị có tiền tố ~).
+
+    Bảo đảm xử lý các trường hợp:
+    1. Thiếu thông tin bitrate trong metadata (tự động tính từ kích thước file gốc / thời lượng).
+    2. Người dùng tắt/bật các track (nếu bỏ track video, chỉ tính bitrate các track audio).
+    3. Trừ hao chi phí đóng gói container (Muxing Overhead ~1.5% + 32KB).
+    4. Tự động định dạng đơn vị hiển thị KB / MB / GB.
+
+    Trả về:
+        tuple (estimated_bytes: float, formatted_text: str)
+    """
+    if not video_info or cut_duration <= 0.05:
+        return 0.0, "~ 0 MB"
+
+    orig_dur = max(0.001, float(video_info.get("duration", 0.0)))
+    orig_size = max(0, int(video_info.get("size", 0)))
+    tracks = video_info.get("tracks", [])
+
+    # Xác định các stream được chọn
+    if active_stream_indices is None:
+        active_set = {t.get("stream_index") for t in tracks if "stream_index" in t}
+    else:
+        active_set = set(active_stream_indices)
+
+    # Phân loại các track được chọn
+    selected_tracks = [t for t in tracks if t.get("stream_index") in active_set]
+    has_video = any(t.get("codec_type") == "video" for t in selected_tracks)
+    selected_audios = [t for t in selected_tracks if t.get("codec_type") == "audio"]
+
+    effective_bitrate_bps = 0.0
+
+    if not has_video and selected_audios:
+        # Trường hợp 1: Chỉ xuất âm thanh (track video bị tắt)
+        # Tính tổng bitrate từ các track audio được chọn
+        for a in selected_audios:
+            bps = float(a.get("bitrate_bps", 0.0))
+            if bps > 1000:
+                effective_bitrate_bps += bps
+            else:
+                # Ước tính bitrate chuẩn theo codec âm thanh nếu không có thẻ bitrate
+                codec = str(a.get("codec_name", "")).lower()
+                if "flac" in codec or "alac" in codec:
+                    effective_bitrate_bps += 700_000.0  # Lossless audio ~700kbps
+                elif "pcm" in codec or "wav" in codec:
+                    effective_bitrate_bps += 1_411_200.0  # CD quality 16-bit 44.1kHz stereo
+                else:
+                    effective_bitrate_bps += 192_000.0  # AAC / MP3 / Opus chuẩn 192kbps
+    else:
+        # Trường hợp 2: Có video (hoặc video + audio)
+        # 1. Thử lấy từ format_bitrate
+        fmt_bps = float(video_info.get("format_bitrate", 0.0))
+        if fmt_bps > 10_000:
+            effective_bitrate_bps = fmt_bps
+        else:
+            # 2. Thử cộng bitrate các stream được chọn
+            stream_bps_sum = sum(float(t.get("bitrate_bps", 0.0)) for t in selected_tracks)
+            if stream_bps_sum > 10_000:
+                effective_bitrate_bps = stream_bps_sum
+            elif orig_size > 0 and orig_dur > 0:
+                # 3. Tính toán trực tiếp từ file_size / duration của video gốc
+                effective_bitrate_bps = (orig_size * 8.0) / orig_dur
+
+    if effective_bitrate_bps <= 0:
+        return 0.0, "~ 0 MB"
+
+    # Tính dung lượng bitstream lý thuyết
+    raw_bytes = (effective_bitrate_bps * cut_duration) / 8.0
+
+    # Bù trù hao phí đóng gói container (Muxing Overhead ~1.5% + 32KB moov/headers)
+    est_bytes = (raw_bytes * 1.015) + 32_768.0
+
+    # Nếu thời lượng cắt gần bằng hoặc bằng thời lượng gốc, không vượt quá dung lượng file gốc
+    if orig_size > 0 and cut_duration >= (orig_dur - 0.5):
+        est_bytes = min(est_bytes, float(orig_size))
+
+    formatted_str = f"~ {format_file_size(est_bytes)}"
+    return est_bytes, formatted_str
+
+
 def find_nearest_keyframe(
     target_sec: float,
     keyframes: list[float],

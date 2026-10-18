@@ -26,6 +26,7 @@ def setup_mpv_dll_directory():
         candidates.extend([
             exe_dir / "tools",
             exe_dir / "_internal",
+            exe_dir / "_internal" / "PySide6",
             exe_dir,
         ])
     for d in candidates:

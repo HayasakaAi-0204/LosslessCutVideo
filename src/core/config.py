@@ -150,15 +150,19 @@ def get_app_icon_path() -> Path:
 def has_hardware_av1_decode() -> bool:
     """Kiểm tra xem phần cứng GPU của hệ thống hiện tại có hỗ trợ giải mã phần cứng video AV1 hay không.
 
-    Hỗ trợ giải mã phần cứng AV1 bản địa:
-    - NVIDIA: Thế hệ RTX 30 series, RTX 40 series, RTX 50 series (RTX 3050+, 4060+, Ampere/Ada Lovelace...).
-      Lưu ý: RTX 20 series (như RTX 2070 Super), GTX 16 series, GTX 10 series KHÔNG có chip giải mã phần cứng AV1.
+    Nguyên tắc Fail-Safe (An toàn là trên hết):
+    - Mặc định trả về False nếu có bất kỳ nghi ngờ, lỗi truy vấn, hoặc phát hiện GPU tích hợp đời cũ (Intel UHD/HD).
+    - Chỉ trả về True khi phát hiện chắc chắn 100% GPU thuộc danh sách hỗ trợ phần cứng AV1 và không bị nghẽn bởi iGPU cũ.
+
+    Hỗ trợ giải mã phần cứng AV1 bản địa (Native ASIC decode):
+    - NVIDIA: Thế hệ RTX 30 series, RTX 40 series, RTX 50 series (Ampere/Ada Lovelace: RTX 3050+, 4060+...).
+      Lưu ý: RTX 20 series, GTX 16 series, GTX 10 series, MX series KHÔNG có chip giải mã phần cứng AV1.
     - Intel: Intel Iris Xe (thế hệ 11 Tiger Lake trở lên), Intel Arc Alchemist/Battlemage, Intel Core Ultra.
-      Lưu ý: Intel UHD 630 / thế hệ 10 Comet Lake trở xuống KHÔNG hỗ trợ AV1 phần cứng.
-    - AMD: Kiến trúc RDNA2 trở lên (Radeon RX 6600 trở lên, RX 7000 series).
+      Lưu ý: Intel UHD 630 / 620 / HD Graphics thế hệ 10 Comet Lake trở xuống KHÔNG hỗ trợ AV1 phần cứng.
+    - AMD: Kiến trúc RDNA2 trở lên (Radeon RX 6000 series trở lên, RX 7000 series, Radeon 700M/800M).
 
     Trả về:
-        True nếu GPU hỗ trợ giải mã phần cứng AV1, False nếu GPU cũ cần giải mã bằng CPU an toàn (libdav1d).
+        True nếu GPU hỗ trợ giải mã phần cứng AV1 chắc chắn, False nếu GPU cũ cần giải mã bằng CPU an toàn (libdav1d).
     """
     if sys.platform != "win32":
         return True
@@ -170,7 +174,7 @@ def has_hardware_av1_decode() -> bool:
         gpu_names: list[str] = []
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as base_key:
             num_subkeys = winreg.QueryInfoKey(base_key)[0]
-            for i in range(min(num_subkeys, 12)):
+            for i in range(min(num_subkeys, 16)):
                 sub_name = winreg.EnumKey(base_key, i)
                 try:
                     with winreg.OpenKey(base_key, sub_name) as sub_key:
@@ -181,36 +185,44 @@ def has_hardware_av1_decode() -> bool:
                     continue
 
         if not gpu_names:
-            return True
+            return False
+
+        # Kiểm tra trường hợp Laptop Optimus card kép:
+        # Nếu có Card Onboard Intel đời cũ (Intel UHD 620, UHD 630, HD Graphics),
+        # màn hình laptop nối trực tiếp vào iGPU này. Direct3D 11 trên Windows sẽ route qua iGPU và gây crash TDR 2s!
+        has_old_intel_igpu = any(
+            ("uhd graphics" in g or "hd graphics" in g or "iris plus" in g or "iris pro" in g)
+            for g in gpu_names
+        )
+        if has_old_intel_igpu:
+            return False
 
         has_capable_gpu = False
         for g in gpu_names:
-            # Kiểm tra card NVIDIA
+            # 1. Card NVIDIA: Phải là RTX 30, 40, 50 hoặc RTX Professional A2000+
             if "nvidia" in g or "geforce" in g:
-                # RTX 30xx, 40xx, 50xx, RTX A series mới
-                for kw in ["rtx 30", "rtx 40", "rtx 50", "a2000", "a4000", "a5000", "a6000"]:
+                if any(old_kw in g for old_kw in ["gtx", "rtx 20", "gt ", "mx", "quadro"]):
+                    continue
+                for kw in ["rtx 30", "rtx 40", "rtx 50", "a2000", "a4000", "a5000", "a6000", "rtx a"]:
                     if kw in g:
                         has_capable_gpu = True
                         break
-                # Các dòng cũ như RTX 2060, RTX 2070, RTX 2080, GTX... không hỗ trợ AV1
-                continue
 
-            # Kiểm tra card Intel
-            if "intel" in g:
+            # 2. Card Intel: Phải là Iris Xe, Arc, hoặc Core Ultra
+            elif "intel" in g:
                 if any(kw in g for kw in ["iris xe", "arc", "ultra", "xe graphics"]):
                     has_capable_gpu = True
                     break
-                continue
 
-            # Kiểm tra card AMD
-            if "amd" in g or "radeon" in g:
-                if any(kw in g for kw in ["rx 6", "rx 7", "radeon 7", "radeon 8"]):
+            # 3. Card AMD: Phải là RX 6000+, 7000+, Radeon 700M/800M
+            elif "amd" in g or "radeon" in g:
+                if any(kw in g for kw in ["rx 6", "rx 7", "radeon 7", "radeon 8", "rdna"]):
                     has_capable_gpu = True
                     break
-                continue
 
         return has_capable_gpu
     except Exception:
-        # Nếu không truy vấn được Registry, mặc định coi như hỗ trợ để thử nghiệm trước
-        return True
+        # Nguyên tắc Fail-Safe: Có lỗi hoặc không xác định được thì trả về False để chạy CPU an toàn
+        return False
+
 
