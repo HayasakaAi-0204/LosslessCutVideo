@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 import sys
+import time
 
 from PySide6.QtCore import Qt, QUrl, Signal, QObject, QEvent
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QPixmap
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QComboBox,
     QStackedWidget,
+    QMessageBox,
 )
 
 from src.core.config import get_project_root, has_mpv, has_hardware_av1_decode
@@ -163,6 +165,8 @@ class PlayerWidget(QWidget):
         self._decode_mode: str = "hw"  # "hw" (Phần cứng GPU) hoặc "sw" (Phần mềm CPU)
         self._user_forced_decode_mode: str | None = None
         self._current_codec: str = ""
+        self._last_fallback_preview_time: float = 0.0
+        self._fallback_flip: bool = False
 
         self._qt_player = None
         self._qt_audio_output = None
@@ -239,6 +243,8 @@ class PlayerWidget(QWidget):
         self.lbl_fallback_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_fallback_preview.setMinimumSize(320, 180)
         self.lbl_fallback_preview.setStyleSheet("background-color: #000000; border: 1px dashed #3b4252; border-radius: 6px;")
+        self.lbl_fallback_preview.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lbl_fallback_preview.mousePressEvent = lambda ev: self.play_pause() if ev.button() == Qt.MouseButton.LeftButton else None
         fallback_layout.addWidget(self.lbl_fallback_preview, stretch=1)
 
         info_box = QWidget(self)
@@ -540,6 +546,12 @@ class PlayerWidget(QWidget):
                 self.btn_play_pause.setText("▶ Phát")
         self.position_changed.emit(pos_ms)
 
+        if getattr(self, "_player_failed", False) and self.is_video_enabled():
+            now = time.monotonic()
+            if (now - getattr(self, "_last_fallback_preview_time", 0.0)) >= 0.35:
+                self._last_fallback_preview_time = now
+                self._request_fallback_preview(pos_ms)
+
     def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus):
         if status == QMediaPlayer.MediaStatus.InvalidMedia:
             if self._decode_mode == "hw":
@@ -554,7 +566,10 @@ class PlayerWidget(QWidget):
                 if self._qt_player:
                     self._qt_player.setPosition(0)
                     self._qt_player.pause()
-                self.video_widget.update()
+                if not getattr(self, "_player_failed", False):
+                    self.video_widget.update()
+                else:
+                    self._request_fallback_preview(0)
                 self.btn_play_pause.setText("▶ Phát")
 
     def _on_duration_changed(self, dur_ms: int):
@@ -564,6 +579,8 @@ class PlayerWidget(QWidget):
                 if self._qt_player:
                     self._qt_player.pause()
                     self._qt_player.setPosition(0)
+                if getattr(self, "_player_failed", False):
+                    self._request_fallback_preview(0)
                 self.btn_play_pause.setText("▶ Phát")
             self.duration_changed.emit(dur_ms)
 
@@ -635,6 +652,22 @@ class PlayerWidget(QWidget):
         """Chuyển đổi qua lại giữa giải mã phần cứng (*H/W) và giải mã phần mềm (S/W)."""
         if not self._current_file_path:
             return
+
+        is_av1 = self._current_codec in ("av1", "av01")
+        # Nếu đang ở S/W và người dùng muốn chuyển sang H/W trên máy không phát hiện GPU hỗ trợ AV1
+        if self._decode_mode == "sw" and is_av1 and not has_hardware_av1_decode():
+            reply = QMessageBox.question(
+                self,
+                "Xác nhận chuyển sang *H/W",
+                "Card đồ họa trên máy này có vẻ không hỗ trợ giải mã phần cứng video AV1.\n\n"
+                "Nếu tiếp tục ép bật *H/W, video có thể bị đen màn hình hoặc ứng dụng có thể gặp lỗi nếu driver quá cũ.\n\n"
+                "Bạn có chắc chắn muốn thử chuyển sang giải mã phần cứng (*H/W) không?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
         new_mode = "sw" if self._decode_mode == "hw" else "hw"
         self.set_decode_mode(new_mode, reload=True, user_action=True)
 
@@ -659,7 +692,7 @@ class PlayerWidget(QWidget):
 
         # Cấu hình biến môi trường và thiết lập engine phát
         if mode == "sw":
-            os.environ["QT_FFMPEG_DECODING_HW_DEVICE_TYPES"] = "none"
+            os.environ["QT_FFMPEG_DECODING_HW_DEVICE_TYPES"] = ""
             if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
                 try:
                     self.mpv_player.hwdec = "no"
@@ -684,9 +717,16 @@ class PlayerWidget(QWidget):
             is_play = self.is_playing()
             file_str = str(self._current_file_path)
 
-            self._player_failed = False
-            if self.is_video_enabled():
-                self.viewport_stack.setCurrentIndex(0)
+            if mode == "hw":
+                self._player_failed = False
+
+            if getattr(self, "_player_failed", False):
+                if self.is_video_enabled():
+                    self.viewport_stack.setCurrentIndex(2)
+                    self._request_fallback_preview(saved_pos)
+            else:
+                if self.is_video_enabled():
+                    self.viewport_stack.setCurrentIndex(0)
 
             if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
                 try:
@@ -731,16 +771,18 @@ class PlayerWidget(QWidget):
         self.btn_hw_sw.setEnabled(True)
         self._pending_first_frame = True
 
+        is_av1 = self._current_codec in ("av1", "av01")
+        has_hw = has_hardware_av1_decode()
+
         # Pre-flight Check:
-        # 1. Nếu người dùng đã tự tay chuyển chế độ (*H/W hoặc S/W), tôn trọng lựa chọn đó.
-        # 2. Nếu là AV1: Kiểm tra an toàn GPU. Nếu GPU không hỗ trợ giải mã phần cứng AV1 chắc chắn 100%
-        #    hoặc là laptop Optimus có iGPU Intel cũ -> Fail-Safe MẶC ĐỊNH S/W (CPU libdav1d)
-        #    để ngăn chặn triệt để lỗi treo driver màn hình 2 giây (TDR).
-        # 3. Với các codec khác (H.264, HEVC, VP9...): Mặc định H/W (GPU) tối ưu hiệu năng.
+        # 1. Nếu người dùng đã chủ động chọn (*H/W hoặc S/W), tôn trọng lựa chọn đó.
+        # 2. Nếu là AV1: Nếu máy có GPU hỗ trợ phần cứng AV1 -> Mặc định *H/W (GPU).
+        #    Nếu máy không có GPU hỗ trợ AV1 -> Mặc định S/W an toàn (CPU libdav1d).
+        # 3. Với các codec khác (H.264, HEVC, VP9...): Mặc định *H/W (GPU) tối ưu hiệu năng.
         if self._user_forced_decode_mode:
             chosen_mode = self._user_forced_decode_mode
-        elif self._current_codec in ("av1", "av01"):
-            chosen_mode = "hw" if has_hardware_av1_decode() else "sw"
+        elif is_av1:
+            chosen_mode = "hw" if has_hw else "sw"
         else:
             chosen_mode = "hw"
 
@@ -771,7 +813,17 @@ class PlayerWidget(QWidget):
                 print(f"[PlayerWidget] Lỗi nạp video qua mpv ({e}), chuyển sang dự phòng Qt...")
                 self._player_failed = True
 
-        # Dự phòng bằng Qt Multimedia
+        # Khi dùng dự phòng Qt Multimedia:
+        # Nếu là codec AV1 và đang ở chế độ CPU (S/W):
+        # Bộ Qt Multimedia trên Windows (PySide6) không tích hợp libdav1d nên không thể giải mã hình ảnh AV1 bằng CPU.
+        # Ngay lập tức kích hoạt chế độ xem trước tương thích bằng FFmpeg tools/ffmpeg.exe (libdav1d)
+        if is_av1 and chosen_mode == "sw":
+            self._player_failed = True
+            if self.is_video_enabled():
+                self.viewport_stack.setCurrentIndex(2)
+                self._request_fallback_preview(0)
+
+        # Dự phòng bằng Qt Multimedia (để phát âm thanh và quản lý vị trí phát)
         if self._qt_player:
             url = QUrl.fromLocalFile(str(self._current_file_path))
             self._qt_player.setSource(url)
@@ -1066,7 +1118,8 @@ class PlayerWidget(QWidget):
 
         preview_dir = get_project_root() / "cache" / "fallback_preview"
         preview_dir.mkdir(parents=True, exist_ok=True)
-        preview_img = preview_dir / "current_frame.jpg"
+        self._fallback_flip = not getattr(self, "_fallback_flip", False)
+        preview_img = preview_dir / ("frame_a.jpg" if self._fallback_flip else "frame_b.jpg")
 
         time_sec = pos_ms / 1000.0
         cmd = build_snapshot_command(
