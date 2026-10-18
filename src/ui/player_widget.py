@@ -28,8 +28,37 @@ from src.ui.styles import UNIFIED_BUTTON_STYLE, UNIFIED_ICON_BUTTON_STYLE, BUTTO
 SPEED_PRESETS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
 
 
+class MpvVideoWidget(QWidget):
+    """Khung hiển thị chuyên dụng cho libmpv qua native Win32 HWND.
+
+    - WA_PaintOnScreen & WA_OpaquePaintEvent: Bàn giao toàn quyền hiển thị cho DirectX / libmpv.
+    - paintEvent pass: Ngăn chặn Qt vẽ đè màu nền đen làm mất hình ảnh video.
+    """
+
+    clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setStyleSheet("background-color: #000000;")
+
+    def paintEvent(self, event):
+        pass  # libmpv / DirectX chịu trách nhiệm vẽ khung hình, Qt KHÔNG được vẽ đè lên
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        main_win = self.window()
+        if main_win:
+            main_win.setFocus()
+        super().mousePressEvent(event)
+
+
 class ClickableVideoWidget(QVideoWidget):
-    """Lớp kế thừa QVideoWidget hỗ trợ phát/dừng khi click chuột và chuyển tiếp focus về MainWindow."""
+    """Lớp kế thừa QVideoWidget hỗ trợ phát/dừng khi click chuột cho engine dự phòng Qt Multimedia."""
 
     clicked = Signal()
 
@@ -167,6 +196,8 @@ class PlayerWidget(QWidget):
         self._current_codec: str = ""
         self._last_fallback_preview_time: float = 0.0
         self._fallback_flip: bool = False
+        self._last_pos_emit_time: float = 0.0
+        self._last_emitted_pos_ms: int = -1
 
         self._qt_player = None
         self._qt_audio_output = None
@@ -177,6 +208,23 @@ class PlayerWidget(QWidget):
 
         self._setup_ui()
         self._setup_player()
+
+    @property
+    def video_widget(self):
+        if self._engine_type == "mpv":
+            return self.mpv_widget
+        return self.qt_video_widget
+
+    def _show_active_video_layer(self):
+        """Hiển thị đúng layer video tương ứng với engine và trạng thái hiện tại."""
+        if not self.is_video_enabled():
+            self.viewport_stack.setCurrentWidget(self.overlay_disabled)
+        elif getattr(self, "_player_failed", False):
+            self.viewport_stack.setCurrentWidget(self.overlay_fallback)
+        elif self._engine_type == "mpv":
+            self.viewport_stack.setCurrentWidget(self.mpv_widget)
+        else:
+            self.viewport_stack.setCurrentWidget(self.qt_video_widget)
 
     @property
     def player(self):
@@ -199,13 +247,18 @@ class PlayerWidget(QWidget):
         self.viewport_stack.setMinimumSize(480, 270)
         self.viewport_stack.setStyleSheet("background-color: #000000;")
 
-        # Lớp 0: Khung hiển thị video thực tế
-        self.video_widget = ClickableVideoWidget(self)
-        self.video_widget.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
-        self.video_widget.clicked.connect(self.play_pause)
-        self.viewport_stack.addWidget(self.video_widget)
+        # Lớp 0: Khung hiển thị chuyên dụng cho libmpv (gắn HWND)
+        self.mpv_widget = MpvVideoWidget(self)
+        self.mpv_widget.clicked.connect(self.play_pause)
+        self.viewport_stack.addWidget(self.mpv_widget)
 
-        # Lớp 1: Khung phủ khi track video bị tắt (khi người dùng bấm [Bỏ] track Video)
+        # Lớp 1: Khung hiển thị dự phòng PySide6 Qt Multimedia
+        self.qt_video_widget = ClickableVideoWidget(self)
+        self.qt_video_widget.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        self.qt_video_widget.clicked.connect(self.play_pause)
+        self.viewport_stack.addWidget(self.qt_video_widget)
+
+        # Lớp 2: Khung phủ khi track video bị tắt (khi người dùng bấm [Bỏ] track Video)
         self.overlay_disabled = QWidget(self)
         self.overlay_disabled.setStyleSheet("background-color: #0f1115; border-radius: 4px;")
         overlay_layout = QVBoxLayout(self.overlay_disabled)
@@ -433,16 +486,17 @@ class PlayerWidget(QWidget):
                 self.bridge.eof_reached.connect(self._on_mpv_eof_reached, Qt.ConnectionType.QueuedConnection)
 
                 # Cấu hình libmpv:
-                # - wid: gắn trực tiếp vào HWND của video_widget
-                # - hwdec='auto-safe': tự động chọn giải mã phần cứng GPU (D3D11VA/NVDEC),
-                #   tự động rơi về CPU libdav1d mượt mà nếu GPU cũ không có phần cứng AV1
-                # - input_default_bindings=False, input_vo_keyboard=False, input_cursor=False:
-                #   cách ly hoàn toàn sự kiện chuột/phím để không cướp phím tắt của Qt
-                # - keep_open='yes': giữ nguyên khung hình cuối cùng khi hết video
+                # - wid: gắn trực tiếp vào native HWND của mpv_widget
+                # - hwdec='auto-copy': giải mã GPU cực nhanh (NVDEC/D3D11VA) và copy buffer về swapchain hiển thị,
+                #   tương thích 100% với laptop 2 card đồ họa (NVIDIA Optimus / Intel iGPU), loại bỏ triệt để lỗi đen màn hình!
+                # - vo='gpu', gpu_api='d3d11': chuẩn DirectX 11 ổn định nhất trên Windows 10/11
+                # - demuxer_max_bytes=100MB: tối ưu bộ nhớ đệm, không ngốn RAM
                 self.mpv_player = mpv.MPV(
-                    wid=str(int(self.video_widget.winId())),
-                    hwdec="auto-safe",
+                    wid=str(int(self.mpv_widget.winId())),
+                    hwdec="auto-copy",
                     vo="gpu",
+                    gpu_api="d3d11",
+                    force_window="yes",
                     keep_open="yes",
                     input_default_bindings=False,
                     input_vo_keyboard=False,
@@ -450,6 +504,8 @@ class PlayerWidget(QWidget):
                     osc=False,
                     osd_level=0,
                     ytdl=False,
+                    demuxer_max_bytes=100 * 1024 * 1024,
+                    demuxer_max_back_bytes=50 * 1024 * 1024,
                 )
 
                 @self.mpv_player.property_observer("time-pos")
@@ -480,12 +536,14 @@ class PlayerWidget(QWidget):
         if self._engine_type == "qt":
             self._setup_qt_player()
 
+        self._show_active_video_layer()
+
     def _setup_qt_player(self):
         """Khởi tạo engine dự phòng PySide6 Qt Multimedia."""
         self._qt_player = QMediaPlayer(self)
         self._qt_audio_output = QAudioOutput(self)
         self._qt_player.setAudioOutput(self._qt_audio_output)
-        self._qt_player.setVideoOutput(self.video_widget)
+        self._qt_player.setVideoOutput(self.qt_video_widget)
 
         self._qt_player.positionChanged.connect(self._on_position_changed)
         self._qt_player.durationChanged.connect(self._on_duration_changed)
@@ -497,7 +555,11 @@ class PlayerWidget(QWidget):
     # -------------------------------------------------------------------------
     def _on_mpv_position_changed(self, pos_ms: int):
         self._current_pos_ms = pos_ms
-        self.position_changed.emit(pos_ms)
+        now = time.monotonic()
+        if (now - getattr(self, "_last_pos_emit_time", 0.0)) >= 0.025 or abs(pos_ms - getattr(self, "_last_emitted_pos_ms", -1)) >= 100:
+            self._last_pos_emit_time = now
+            self._last_emitted_pos_ms = pos_ms
+            self.position_changed.emit(pos_ms)
 
     def _on_mpv_duration_changed(self, dur_ms: int):
         if dur_ms > 0:
@@ -533,8 +595,8 @@ class PlayerWidget(QWidget):
             return
 
         self._player_failed = True
+        self._show_active_video_layer()
         if self.is_video_enabled():
-            self.viewport_stack.setCurrentIndex(2)
             self._request_fallback_preview(self._current_pos_ms)
 
     def _on_position_changed(self, pos_ms: int):
@@ -705,38 +767,30 @@ class PlayerWidget(QWidget):
             os.environ.pop("QT_FFMPEG_DECODING_HW_DEVICE_TYPES", None)
             if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
                 try:
-                    self.mpv_player.hwdec = "auto-safe"
+                    self.mpv_player.hwdec = "auto-copy"
                 except Exception:
                     try:
-                        self.mpv_player["hwdec"] = "auto-safe"
+                        self.mpv_player["hwdec"] = "auto-copy"
                     except Exception:
                         pass
 
         if reload and self._current_file_path and self._current_file_path.is_file():
             saved_pos = self._current_pos_ms
             is_play = self.is_playing()
-            file_str = str(self._current_file_path)
 
             if mode == "hw":
                 self._player_failed = False
 
-            if getattr(self, "_player_failed", False):
-                if self.is_video_enabled():
-                    self.viewport_stack.setCurrentIndex(2)
-                    self._request_fallback_preview(saved_pos)
-            else:
-                if self.is_video_enabled():
-                    self.viewport_stack.setCurrentIndex(0)
+            self._show_active_video_layer()
 
             if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
                 try:
-                    self.mpv_player.pause = not is_play
-                    if hasattr(self.mpv_player, "play"):
-                        self.mpv_player.play(file_str)
-                    else:
-                        self.mpv_player.command("loadfile", file_str, "replace")
-                    if saved_pos > 0:
-                        self.seek(saved_pos)
+                    # mpv chuyển đổi trực tiếp bộ giải mã GPU <-> CPU ngay trên luồng phát mà không cần nạp lại file
+                    if not is_play:
+                        try:
+                            self.mpv_player.command("seek", 0, "relative+exact")
+                        except Exception:
+                            pass
                     return
                 except Exception as e:
                     print(f"[PlayerWidget] Lỗi nạp lại chế độ {mode} qua mpv: {e}")
@@ -791,6 +845,7 @@ class PlayerWidget(QWidget):
         if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
             try:
                 file_str = str(self._current_file_path)
+                self._show_active_video_layer()
                 self.mpv_player.pause = True
                 if hasattr(self.mpv_player, "play"):
                     self.mpv_player.play(file_str)
@@ -820,7 +875,7 @@ class PlayerWidget(QWidget):
         if is_av1 and chosen_mode == "sw":
             self._player_failed = True
             if self.is_video_enabled():
-                self.viewport_stack.setCurrentIndex(2)
+                self._show_active_video_layer()
                 self._request_fallback_preview(0)
 
         # Dự phòng bằng Qt Multimedia (để phát âm thanh và quản lý vị trí phát)
@@ -896,18 +951,15 @@ class PlayerWidget(QWidget):
     def set_video_enabled(self, enabled: bool):
         """Bật hoặc tắt hiển thị hình ảnh video khi track Video được bật/tắt."""
         self._video_enabled = enabled
+        self._show_active_video_layer()
         if enabled:
-            if getattr(self, "_player_failed", False):
-                self.viewport_stack.setCurrentIndex(2)
-            else:
-                self.viewport_stack.setCurrentIndex(0)
-                if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
-                    try:
-                        self.mpv_player.vid = "auto"
-                    except Exception:
-                        pass
-                elif hasattr(self, "_qt_player") and self._qt_player:
-                    self._qt_player.setVideoOutput(self.video_widget)
+            if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
+                try:
+                    self.mpv_player.vid = "auto"
+                except Exception:
+                    pass
+            elif hasattr(self, "_qt_player") and self._qt_player:
+                self._qt_player.setVideoOutput(self.qt_video_widget)
             has_media = bool(getattr(self, "_current_file_path", None))
             if hasattr(self, "btn_snapshot"):
                 self.btn_snapshot.setEnabled(has_media)
@@ -916,7 +968,6 @@ class PlayerWidget(QWidget):
                 self.btn_rotate.setEnabled(has_media)
                 self.btn_rotate.setToolTip("Xoay hướng hiển thị video theo chiều kim đồng hồ 90° (Áp dụng khi xuất file & chụp ảnh, phím tắt Ctrl+R)")
         else:
-            self.viewport_stack.setCurrentIndex(1)
             if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
                 try:
                     self.mpv_player.vid = "no"
@@ -1040,6 +1091,8 @@ class PlayerWidget(QWidget):
             try:
                 target_sec = self._current_pos_ms / 1000.0
                 self.mpv_player.command("seek", target_sec, "absolute+exact")
+                self._last_pos_emit_time = time.monotonic()
+                self._last_emitted_pos_ms = self._current_pos_ms
                 self.position_changed.emit(self._current_pos_ms)
                 return
             except Exception:

@@ -33,7 +33,7 @@ test_*.py
 tools/*
 !tools/.gitkeep
 
-# --- Packaging & Distribution (Not needed to run source code) ---
+# --- Packaging & Distribution Output (Ignore heavy output artifacts) ---
 build/
 dist/
 *.spec
@@ -41,9 +41,7 @@ dist/
 *.7z
 *.tar.gz
 *.rar
-build_exe.bat
 build_portable.py
-package_app.py
 
 # --- Reports, Documents, HTML Exports & Notes ---
 # (App is 100% PySide6, does not require HTML/Doc/Office files to run)
@@ -127,10 +125,12 @@ Thumbs.db
 [Dd]esktop.ini
 $RECYCLE.BIN/
 
-# --- Whitelist: Keep Application Code & Runtime Assets ---
+# --- Whitelist: Keep Application Code, Scripts & Runtime Assets ---
 !requirements.txt
 !main.py
 !run.bat
+!package_app.py
+!build_exe.bat
 !src/
 !src/**
 !assets/
