@@ -67,6 +67,7 @@ docs/
 
 # --- 6. Cấu Hình Riêng & AI Workspace ---
 GEMINI.md
+Compressed
 .gemini/
 .system_generated/
 .superpowers/
