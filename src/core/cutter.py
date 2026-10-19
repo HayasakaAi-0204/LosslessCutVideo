@@ -192,6 +192,8 @@ def build_cut_command(
     snap_mode: str = "closest",
     mix_audio: bool = False,
     rotation: int | None = None,
+    total_duration: float | None = None,
+    fps: float | None = None,
 ) -> tuple[list[str], float, float]:
     """Xây dựng câu lệnh FFmpeg Stream Copy bảo toàn 100% nguyên bản.
     
@@ -266,7 +268,19 @@ def build_cut_command(
             return stream_types[s_idx]
         return "video" if s_idx == 0 else "audio"
 
-    cut_dur = max(0.001, effective_end - effective_start)
+    # Xác định có cắt đến hết video hay không
+    cut_to_eof = False
+    if total_duration is not None and total_duration > 0:
+        if effective_end >= (total_duration - 0.05):
+            cut_to_eof = True
+
+    # Nếu cắt ở giữa file: Bù thời lượng frame để không bị toán tử [-t] loại trừ khung hình tại mốc Out
+    frame_dur = (1.0 / fps) if (fps and fps > 0) else 0.0
+    cut_dur = max(0.001, (effective_end - effective_start) + frame_dur)
+
+    duration_args: list[str] = []
+    if not cut_to_eof:
+        duration_args = ["-t", f"{cut_dur:.4f}"]
 
     # Stream Copy 100% Lossless: Mọi track được chọn chia sẻ chung một cửa sổ cắt bit-for-bit
     map_args: list[str] = []
@@ -286,18 +300,17 @@ def build_cut_command(
     rot_val: int | None = None
     if has_video_out and rotation is not None and out_p.suffix.lower() in (".mp4", ".mov", ".m4v", ".mkv"):
         rot_val = int(rotation) % 360
-        if rot_val != 0:
-            # Trong FFmpeg, -display_rotation nhận góc quay ngược chiều kim đồng hồ (độ)
-            ccw_deg = (360 - rot_val) % 360
-            display_rot_args = ["-display_rotation:v:0", str(ccw_deg)]
+        # Trong FFmpeg, -display_rotation nhận góc quay ngược chiều kim đồng hồ (độ)
+        ccw_deg = (360 - rot_val) % 360
+        display_rot_args = ["-display_rotation:v:0", str(ccw_deg)]
 
     cmd = [
         str(ffmpeg_bin),
         "-y",
-        *display_rot_args,
         "-ss", f"{effective_start:.4f}",
+        *display_rot_args,
         "-i", str(in_p),
-        "-t", f"{cut_dur:.4f}",
+        *duration_args,
         "-c", "copy",
         *map_args,
         "-avoid_negative_ts", "make_zero",

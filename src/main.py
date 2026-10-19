@@ -40,8 +40,8 @@ def setup_mpv_dll_directory():
             if sys.platform == "win32":
                 try:
                     import ctypes
-                    ctypes.windll.kernel32.AddDllDirectory(d_str)
-                    ctypes.windll.kernel32.SetDllDirectoryW(d_str)
+                    if (d / "libmpv-2.dll").is_file() or (d / "mpv-2.dll").is_file():
+                        ctypes.windll.kernel32.SetDllDirectoryW(d_str)
                 except Exception:
                     pass
             cur_path = os.environ.get("PATH", "")
@@ -111,13 +111,17 @@ def apply_system_stability_protections():
             candidates.extend([
                 meipass / "PySide6" / "plugins",
                 meipass / "_internal" / "PySide6" / "plugins",
+                meipass / "_internal" / "PySide6" / "Qt" / "plugins",
                 meipass / "plugins",
             ])
         candidates.extend([
             exe_dir / "plugins",
             exe_dir / "_internal" / "PySide6" / "plugins",
+            exe_dir / "_internal" / "PySide6" / "Qt" / "plugins",
             exe_dir / "PySide6" / "plugins",
+            exe_dir / "PySide6" / "Qt" / "plugins",
             exe_dir / "_internal" / "plugins",
+            exe_dir / "_internal" / "Qt" / "plugins",
         ])
 
         found_primary = False

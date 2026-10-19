@@ -97,8 +97,8 @@ class ShortcutsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Bảng Phím Tắt Nhanh - Lossless Video Cutter")
         self.setModal(True)
-        self.setMinimumSize(660, 560)
-        self.resize(680, 580)
+        self.setMinimumSize(700, 600)
+        self.resize(720, 640)
 
         # Đặt biểu tượng ứng dụng
         icon_path = get_app_icon_path()
@@ -168,41 +168,58 @@ class ShortcutsDialog(QDialog):
         container_layout.setContentsMargins(2, 2, 2, 2)
         container_layout.setSpacing(10)
 
-        # Nhóm 1: Phát & Tua Video
-        playback_shortcuts = [
-            ("Phát / Tạm dừng video (Play / Pause)", [["Space"]]),
-            ("Lùi / Tiến 1 khung hình (~0.033s)", [["←"], ["→"]], ),
-            ("Tua từng khung hình chính xác (Frame Step)", [[","], ["."]]),
-            ("Nhảy tới Keyframe (I-frame) Trước / Sau", [["Ctrl", "←"], ["Ctrl", "→"]]),
-            ("Nhảy nhanh Keyframe (phím tắt LosslessCut)", [["J"], ["L"]]),
-            ("Tăng / Giảm tốc độ phát (0.25x – 2.00x)", [["["], ["]"]]),
-            ("Đặt lại tốc độ phát về 1.00x chuẩn", [["R"]]),
-            ("Chuyển đổi giải mã phần cứng GPU và CPU (*H/W ↔ S/W)", [["H"]]),
-        ]
-        container_layout.addWidget(
-            ShortcutCategoryCard("Điều Khiển Phát & Tua Video", "🎬", playback_shortcuts, container)
-        )
-
-        # Nhóm 2: Đặt Mốc Cắt & Đoạn Video
-        cutting_shortcuts = [
-            ("Đặt mốc Bắt Đầu cắt (In Point - Bám Keyframe)", [["I"]]),
-            ("Đặt mốc Kết Thúc cắt (Out Point - Bám Keyframe)", [["O"]]),
-            ("Xuất video Lossless đã cắt (100% nguyên bản)", [["Enter"], ["Ctrl", "E"]]),
-        ]
-        container_layout.addWidget(
-            ShortcutCategoryCard("Điểm Cắt & Xuất File", "✂️", cutting_shortcuts, container)
-        )
-
-        # Nhóm 3: Công Cụ & Thao Tác Hệ Thống
-        tool_shortcuts = [
-            ("Chụp ảnh khung hình độ nét gốc (Lưu PNG & chép Clipboard)", [["C"], ["Ctrl", "S"]]),
-            ("Xoay video 90° theo chiều kim đồng hồ (Metadata Lossless)", [["Ctrl", "R"]]),
-            ("Mở video mới từ máy tính", [["Ctrl", "O"]]),
-            ("Hủy tiến trình / Đóng video đang mở", [["Esc"]]),
+        # Nhóm 1: Lịch Sử & Thao Tác Chung
+        general_shortcuts = [
+            ("Hoàn tác thao tác chỉnh sửa trước đó (Undo)", [["Ctrl", "Z"]]),
+            ("Làm lại thao tác vừa hoàn tác (Redo)", [["Ctrl", "Y"], ["Ctrl", "Shift", "Z"]]),
+            ("Mở file video hoặc âm thanh mới từ máy tính", [["Ctrl", "O"]]),
+            ("Hủy tiến trình / Đóng media đang mở", [["Esc"]]),
             ("Bật / Tắt bảng phím tắt này", [["F1"], ["?"]]),
         ]
         container_layout.addWidget(
-            ShortcutCategoryCard("Công Cụ, Chụp Ảnh & Tiện Ích", "📸", tool_shortcuts, container)
+            ShortcutCategoryCard("Lịch Sử Thao Tác & Hệ Thống", "↶", general_shortcuts, container)
+        )
+
+        # Nhóm 2: Chuyên Mục Cắt Video
+        video_shortcuts = [
+            ("Đặt mốc Bắt Đầu cắt video (In Point - Bám Keyframe)", [["I"]]),
+            ("Đặt mốc Kết Thúc cắt video (Out Point - Bám Keyframe)", [["O"]]),
+            ("Chuyển đổi chế độ: Siêu Tốc (Copy) ↔ Smart Cut", [["M"], ["Ctrl", "M"]]),
+            ("Nhảy nhanh Keyframe (I-frame) Trước / Kế tiếp", [["J"], ["L"]]),
+            ("Nhảy Keyframe bằng phím mũi tên", [["Ctrl", "←"], ["Ctrl", "→"]]),
+            ("Tua từng khung hình cực chuẩn (Frame Step)", [["←"], ["→"]]),
+            ("Tua từng khung hình (phím dấu phẩy / dấu chấm)", [[","], ["."]]),
+            ("Xoay hướng video 90° thuận chiều kim đồng hồ (Metadata Lossless)", [["Ctrl", "R"]]),
+            ("Chụp ảnh khung hình độ nét gốc (PNG & Clipboard)", [["C"], ["Ctrl", "S"]]),
+            ("Chuyển đổi giải mã phần cứng GPU và CPU (*H/W ↔ S/W)", [["H"]]),
+            ("Xuất video Lossless đã cắt (100% nguyên bản)", [["Enter"], ["Ctrl", "E"]]),
+        ]
+        container_layout.addWidget(
+            ShortcutCategoryCard("Chuyên Mục Cắt Video", "🎬", video_shortcuts, container)
+        )
+
+        # Nhóm 3: Chuyên Mục Cắt Âm Thanh
+        audio_shortcuts = [
+            ("Đặt mốc Bắt Đầu cắt âm thanh (Chính xác từng mili-giây)", [["I"]]),
+            ("Đặt mốc Kết Thúc cắt âm thanh (Chính xác từng mili-giây)", [["O"]]),
+            ("Bật / Tắt trích xuất từng track âm thanh độc lập", [["Click nút Giữ / Bỏ"]]),
+            ("Tăng / Giảm tốc độ phát âm thanh (0.25x – 2.00x)", [["["], ["]"]]),
+            ("Đặt lại tốc độ phát âm thanh về 1.00x chuẩn", [["R"]]),
+            ("Thu phóng sóng âm thanh (Waveform Zoom)", [["Ctrl", "Lăn chuột"], ["+ / -"]]),
+            ("Tự động xuất file âm thanh Lossless (M4A/MP3/MKA/WAV)", [["Enter"], ["Ctrl", "E"]]),
+        ]
+        container_layout.addWidget(
+            ShortcutCategoryCard("Chuyên Mục Cắt Âm Thanh", "🎵", audio_shortcuts, container)
+        )
+
+        # Nhóm 4: Điều Khiển Phát
+        playback_shortcuts = [
+            ("Phát / Tạm dừng video hoặc âm thanh (Play / Pause)", [["Space"]]),
+            ("Cuộn Timeline sang trái / sang phải", [["Lăn chuột"]]),
+            ("Thu vừa Timeline khớp toàn bộ màn hình", [["Nút Thu vừa"]]),
+        ]
+        container_layout.addWidget(
+            ShortcutCategoryCard("Điều Khiển Phát & Xem Trước", "▶️", playback_shortcuts, container)
         )
 
         scroll_area.setWidget(container)

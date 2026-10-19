@@ -202,12 +202,50 @@ def parse_ffprobe_json(raw_json: str) -> dict[str, Any]:
     if fmt_bitrate_val <= 0.0 and duration > 0 and file_size > 0:
         fmt_bitrate_val = (file_size * 8.0) / duration
 
+    pix_fmt = video_stream.get("pix_fmt", "") if video_stream else ""
+    color_range = video_stream.get("color_range", "") if video_stream else ""
+    color_space = video_stream.get("color_space", "") if video_stream else ""
+    color_primaries = video_stream.get("color_primaries", "") if video_stream else ""
+    color_transfer = video_stream.get("color_transfer", "") if video_stream else ""
+    profile = video_stream.get("profile", "") if video_stream else ""
+    has_video = video_stream is not None
+
+    time_base = ""
+    timescale = 0
+    if video_stream:
+        time_base = str(video_stream.get("time_base") or "").strip()
+        if time_base:
+            try:
+                parts = time_base.split("/")
+                if len(parts) == 2 and int(parts[1]) > 0:
+                    timescale = int(parts[1])
+                elif len(parts) == 1 and int(parts[0]) > 0:
+                    timescale = int(parts[0])
+            except Exception:
+                timescale = 0
+        if timescale <= 0 and fps > 0:
+            if fps >= 119:
+                timescale = 120000
+            elif fps >= 59:
+                timescale = 60000
+            else:
+                timescale = 90000
+
     return {
         "duration": duration,
         "size": file_size,
         "format_name": format_info.get("format_name", ""),
         "format_bitrate": fmt_bitrate_val,
         "video_codec": video_codec,
+        "pix_fmt": pix_fmt,
+        "color_range": color_range,
+        "color_space": color_space,
+        "color_primaries": color_primaries,
+        "color_transfer": color_transfer,
+        "profile": profile,
+        "time_base": time_base,
+        "timescale": timescale,
+        "has_video": has_video,
         "width": width,
         "height": height,
         "fps": fps,
@@ -237,7 +275,7 @@ def parse_keyframe_csv(csv_text: str) -> list[float]:
             try:
                 val = float(part)
                 if val >= 0.0:
-                    keyframes.append(round(val, 4))
+                    keyframes.append(round(val, 6))
                     break
             except ValueError:
                 continue
@@ -293,7 +331,11 @@ def probe_video_info(video_path: str | Path) -> dict[str, Any]:
         raise RuntimeError(f"ffprobe binary not found at {ffprobe_bin}") from e
 
 
-def get_keyframe_timestamps(video_path: str | Path, timeout: float = 30.0) -> list[float]:
+def get_keyframe_timestamps(
+    video_path: str | Path,
+    timeout: float = 30.0,
+    worker_ref: Any = None,
+) -> list[float]:
     """Trích xuất danh sách các mốc thời gian Keyframe (I-frame) tính bằng giây.
     
     Sử dụng cờ -skip_frame nokey để tách gói cực nhanh mà không cần giải mã frame P/B.
@@ -301,6 +343,7 @@ def get_keyframe_timestamps(video_path: str | Path, timeout: float = 30.0) -> li
     Tham số:
         video_path: Đường dẫn tới file video.
         timeout: Thời gian tối đa (giây) trước khi chuyển sang phương pháp dự phòng.
+        worker_ref: Tham chiếu tới worker để hủy tức thì tiến trình con khi người dùng chuyển file/hủy.
         
     Trả về:
         Danh sách các mốc Keyframe được sắp xếp tăng dần.
@@ -325,23 +368,39 @@ def get_keyframe_timestamps(video_path: str | Path, timeout: float = 30.0) -> li
         str(path),
     ]
 
+    proc_frames = None
     try:
-        result = subprocess.run(
+        proc_frames = subprocess.Popen(
             cmd_frames,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
-            timeout=timeout,
             creationflags=creationflags,
-            check=True,
         )
-        keyframes = parse_keyframe_csv(result.stdout)
-        if keyframes:
-            return keyframes
+        if worker_ref is not None:
+            worker_ref._process = proc_frames
+        stdout, _ = proc_frames.communicate(timeout=timeout)
+        if proc_frames.returncode == 0:
+            keyframes = parse_keyframe_csv(stdout)
+            if keyframes:
+                return keyframes
+    except subprocess.TimeoutExpired:
+        if proc_frames:
+            try:
+                proc_frames.kill()
+                proc_frames.communicate()
+            except Exception:
+                pass
     except Exception:
         pass
+    finally:
+        if worker_ref is not None:
+            worker_ref._process = None
+
+    if worker_ref is not None and getattr(worker_ref, "_is_cancelled", False):
+        return []
 
     # 2. Phương pháp dự phòng nhanh: kiểm tra cờ K ở cấp độ packet (hoạt động tốt với AV1/HEVC)
     cmd_packets = [
@@ -354,31 +413,44 @@ def get_keyframe_timestamps(video_path: str | Path, timeout: float = 30.0) -> li
         str(path),
     ]
 
+    proc_packets = None
     try:
-        result = subprocess.run(
+        proc_packets = subprocess.Popen(
             cmd_packets,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
-            timeout=15,
             creationflags=creationflags,
-            check=True,
         )
-        packet_kf: list[float] = []
-        for line in result.stdout.strip().splitlines():
-            parts = [p.strip() for p in line.split(",") if p.strip()]
-            if len(parts) >= 2 and "K" in parts[1]:
-                try:
-                    packet_kf.append(round(float(parts[0]), 4))
-                except ValueError:
-                    continue
-        if packet_kf:
-            return sorted(list(set(packet_kf)))
+        if worker_ref is not None:
+            worker_ref._process = proc_packets
+        stdout, _ = proc_packets.communicate(timeout=15.0)
+        if proc_packets.returncode == 0:
+            packet_kf: list[float] = []
+            for line in stdout.strip().splitlines():
+                parts = [p.strip() for p in line.split(",") if p.strip()]
+                if len(parts) >= 2 and "K" in parts[1]:
+                    try:
+                        packet_kf.append(round(float(parts[0]), 6))
+                    except ValueError:
+                        continue
+            if packet_kf:
+                return sorted(list(set(packet_kf)))
+    except subprocess.TimeoutExpired:
+        if proc_packets:
+            try:
+                proc_packets.kill()
+                proc_packets.communicate()
+            except Exception:
+                pass
     except Exception:
         pass
+    finally:
+        if worker_ref is not None:
+            worker_ref._process = None
 
-    return [0.0]
+    return []
 
 

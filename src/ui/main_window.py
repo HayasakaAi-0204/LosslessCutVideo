@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QFrame,
+    QSplitter,
 )
 
 from src.core.config import validate_tools, get_tools_dir
@@ -37,8 +38,11 @@ from src.core.cutter import (
     generate_snapshot_output_name,
     build_snapshot_command,
 )
+from src.core.history import HistoryManager, EditState
+from src.core.smart_cutter import analyze_smart_cut_plan
 from src.core.worker import (
     CutWorker,
+    SmartCutWorker,
     KeyframeWorker,
     AudioWaveformWorker,
     SnapshotWorker,
@@ -108,6 +112,8 @@ class MainWindow(QMainWindow):
         self._tool_worker: ToolDownloaderWorker | None = None
         self._snapshot_worker: SnapshotWorker | None = None
         self._last_drop_time: float = 0.0
+        self._history = HistoryManager(max_depth=50)
+        self._last_committed_state: EditState | None = None
 
         self._setup_ui()
         self._check_environment()
@@ -139,20 +145,37 @@ class MainWindow(QMainWindow):
         top_layout.setContentsMargins(10, 6, 10, 6)
         top_layout.setSpacing(12)
 
-        # Bên trái: Nút mở file & Thông tin video
-        self.btn_open_file = QPushButton("📁 Mở Video...")
+        # Bên trái: Nút mở file & Thông tin video/audio
+        self.btn_open_file = QPushButton("📁 Mở File...")
+        self.btn_open_file.setToolTip("Mở file video hoặc âm thanh cần cắt (Phím tắt Ctrl+O)")
         self.btn_open_file.setStyleSheet(UNIFIED_BUTTON_STYLE)
         self.btn_open_file.setFixedHeight(32)
         self.btn_open_file.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_open_file.clicked.connect(self._select_video_file)
 
-        self.lbl_video_info = QLabel("Chưa chọn video (Kéo thả video vào bất kỳ đâu hoặc bấm 'Mở Video')")
+        self.lbl_video_info = QLabel("")
         self.lbl_video_info.setStyleSheet("color: #8b949e; font-size: 13px;")
 
         top_layout.addWidget(self.btn_open_file)
         top_layout.addWidget(self.lbl_video_info, stretch=1)
 
-        # Bên phải: Nút Phím tắt, Dung lượng ước tính, Nút Xuất Video xanh dương & Nút Hủy / Đóng video
+        # Bên phải: Nút Hoàn tác/Làm lại, Phím tắt, Dung lượng ước tính, Nút Xuất Video xanh dương & Nút Hủy / Đóng video
+        self.btn_undo = QPushButton("↶ Hoàn tác")
+        self.btn_undo.setToolTip("Hoàn tác thao tác chỉnh sửa trước đó (Phím tắt Ctrl+Z)")
+        self.btn_undo.setStyleSheet(UNIFIED_BUTTON_STYLE)
+        self.btn_undo.setFixedHeight(32)
+        self.btn_undo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_undo.setEnabled(False)
+        self.btn_undo.clicked.connect(self._undo)
+
+        self.btn_redo = QPushButton("↷ Làm lại")
+        self.btn_redo.setToolTip("Làm lại thao tác vừa hoàn tác (Phím tắt Ctrl+Y hoặc Ctrl+Shift+Z)")
+        self.btn_redo.setStyleSheet(UNIFIED_BUTTON_STYLE)
+        self.btn_redo.setFixedHeight(32)
+        self.btn_redo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_redo.setEnabled(False)
+        self.btn_redo.clicked.connect(self._redo)
+
         self.btn_shortcuts = QPushButton("⌨️ Phím tắt (F1)")
         self.btn_shortcuts.setToolTip("Xem danh sách phím tắt hữu ích (Phím F1 hoặc ?)")
         self.btn_shortcuts.setStyleSheet(UNIFIED_BUTTON_STYLE)
@@ -191,6 +214,8 @@ class MainWindow(QMainWindow):
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self._close_current_video)
 
+        top_layout.addWidget(self.btn_undo)
+        top_layout.addWidget(self.btn_redo)
         top_layout.addWidget(self.btn_shortcuts)
         top_layout.addWidget(self.lbl_estimated_size)
         top_layout.addWidget(self.btn_export)
@@ -199,18 +224,49 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(top_bar)
 
         # ---------------------------------------------------------------------
-        # 2. Khung nhìn phát video
+        # 2. Thanh phân chia Splitter linh hoạt: Player & Timeline (Phong cách CapCut)
         # ---------------------------------------------------------------------
+        self.splitter = QSplitter(Qt.Orientation.Vertical, self)
+        self.splitter.setHandleWidth(6)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setStyleSheet("""
+            QSplitter::handle:vertical {
+                background-color: #1a1d24;
+                border-top: 1px solid #2c313c;
+                border-bottom: 1px solid #2c313c;
+                height: 6px;
+            }
+            QSplitter::handle:vertical:hover {
+                background-color: #00d2d3;
+                border-color: #00d2d3;
+            }
+            QSplitter::handle:vertical:pressed {
+                background-color: #00b4b5;
+                border-color: #00b4b5;
+            }
+        """)
+
+        # Khung nhìn phát video
         self.player_widget = PlayerWidget(self)
         self.player_widget.file_dropped.connect(self._load_video)
-        main_layout.addWidget(self.player_widget, stretch=1)
+        self.player_widget.open_file_requested.connect(self._select_video_file)
+        self.splitter.addWidget(self.player_widget)
 
-        # ---------------------------------------------------------------------
-        # 3. Timeline đa track phong cách CapCut
-        # ---------------------------------------------------------------------
+        # Timeline đa track phong cách CapCut
         self.timeline_widget = TimelineWidget(self)
         self.timeline_widget.setAcceptDrops(True)
-        main_layout.addWidget(self.timeline_widget)
+        self.splitter.addWidget(self.timeline_widget)
+
+        # Ưu tiên dãn màn phát video khi cửa sổ phóng to, Timeline giữ theo số lượng track
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setCollapsible(0, False)
+        self.splitter.setCollapsible(1, False)
+
+        init_tl_h = self.timeline_widget.get_ideal_height(1)
+        self.splitter.setSizes([600, init_tl_h])
+
+        main_layout.addWidget(self.splitter, stretch=1)
 
         # Kết nối Trình phát & Timeline
         self.player_widget.position_changed.connect(self.timeline_widget.set_position)
@@ -224,6 +280,8 @@ class MainWindow(QMainWindow):
         self.player_widget.snapshot_requested.connect(self._take_snapshot)
         self.player_widget.rotation_changed.connect(self._on_rotation_changed)
         self.player_widget.decode_mode_changed.connect(self._on_decode_mode_changed)
+        self.timeline_widget.render_mode_changed.connect(self._on_render_mode_changed)
+        self.timeline_widget.edit_action_completed.connect(self._record_edit_state)
 
         # ---------------------------------------------------------------------
         # 4. Thanh trạng thái tinh gọn & Tiến trình ở đáy
@@ -331,19 +389,28 @@ class MainWindow(QMainWindow):
         progress_dialog.exec()
 
     def _select_video_file(self):
+        filter_str = (
+            "Tất cả tệp Media (*.mp4 *.mkv *.mov *.avi *.ts *.webm *.flv *.wmv *.m4v *.3gp *.mp3 *.m4a *.aac *.flac *.wav *.ogg *.opus *.wma *.mka);;"
+            "Tệp Video (*.mp4 *.mkv *.mov *.avi *.ts *.webm *.flv *.wmv *.m4v *.3gp);;"
+            "Tệp Âm Thanh (*.mp3 *.m4a *.aac *.flac *.wav *.ogg *.opus *.wma *.mka);;"
+            "Tất cả tệp (*.*)"
+        )
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Chọn file video cần cắt",
+            "Chọn file video hoặc âm thanh cần cắt",
             "",
-            "Video Files (*.mp4 *.mkv *.mov *.avi *.ts *.webm *.flv);;All Files (*.*)",
+            filter_str,
         )
         if file_path:
             self._load_video(Path(file_path))
 
+    _select_media_file = _select_video_file
+
     def _load_video(self, video_path: Path):
-        if self._worker and self._worker.isRunning():
-            self._worker.cancel()
-            self._worker.wait(200)
+        for w in [self._worker, self._kf_worker, self._audio_worker, self._snapshot_worker]:
+            if w and w.isRunning():
+                w.cancel()
+                w.wait(100)
 
         self._current_video_path = video_path.resolve()
         self.lbl_status.setText(f"Đang phân tích: {video_path.name}...")
@@ -355,16 +422,27 @@ class MainWindow(QMainWindow):
             self._keyframes = []
 
             dur_sec = self._video_info.get("duration", 0.0)
-            codec = self._video_info.get("video_codec", "N/A")
+            codec = self._video_info.get("video_codec", "")
+            has_video = self._video_info.get("has_video", False)
             width = self._video_info.get("width", 0)
             height = self._video_info.get("height", 0)
             fps = self._video_info.get("fps", 0.0)
             tracks = self._video_info.get("tracks", [])
 
-            info_str = (
-                f"🎬 {video_path.name} | {width}x{height} @ {fps}fps | "
-                f"Codec: {codec.upper()} | {len(tracks)} Tracks | Tổng thời lượng: {format_timestamp(dur_sec)}"
-            )
+            if has_video:
+                info_str = (
+                    f"🎬 {video_path.name} | {width}x{height} @ {fps}fps | "
+                    f"Codec: {codec.upper()} | {len(tracks)} Tracks | Tổng thời lượng: {format_timestamp(dur_sec)}"
+                )
+            else:
+                audio_tracks = self._video_info.get("audio_tracks", [])
+                first_audio = audio_tracks[0] if audio_tracks else {}
+                a_codec = first_audio.get("codec_name", "AUDIO").upper()
+                details = first_audio.get("details", "")
+                info_str = (
+                    f"🎵 {video_path.name} | Codec: {a_codec} ({details}) | "
+                    f"{len(tracks)} Tracks | Tổng thời lượng: {format_timestamp(dur_sec)}"
+                )
             self.lbl_video_info.setText(info_str)
 
             # 2. Nạp các track vào Timeline đa track CapCut
@@ -372,8 +450,22 @@ class MainWindow(QMainWindow):
             self.timeline_widget.set_video_info(self._video_info)
             self.timeline_widget.set_duration(int(dur_sec * 1000))
 
-            # 3. Nạp video vào khung nhìn trình phát và khởi tạo phạm vi xem trước
-            self.player_widget.load_video(self._current_video_path, self._keyframes, fps=fps, codec=codec)
+            # Tự động mở rộng Splitter để hiển thị trọn vẹn toàn bộ các track
+            ideal_h = self.timeline_widget.get_ideal_height(len(tracks))
+            tot_h = self.splitter.height()
+            if tot_h <= 100:
+                tot_h = max(600, self.height() - 100)
+            player_h = max(200, tot_h - ideal_h)
+            self.splitter.setSizes([player_h, ideal_h])
+
+            # 3. Nạp file vào khung nhìn trình phát và khởi tạo phạm vi xem trước
+            self.player_widget.load_video(
+                self._current_video_path,
+                self._keyframes,
+                fps=fps,
+                codec=codec,
+                has_video=has_video,
+            )
             self.player_widget.set_cut_range(0.0, dur_sec)
             init_rot = int(self._video_info.get("rotation", 0))
             self.player_widget.set_initial_rotation(init_rot)
@@ -383,15 +475,28 @@ class MainWindow(QMainWindow):
             )
             self._update_estimated_size_display()
 
-            self.lbl_status.setText("Đã nạp video. Đang quét Keyframe trong nền...")
+            # 4. Quét keyframe và dạng sóng âm thanh không đồng bộ trong nền
+            if has_video:
+                self.lbl_status.setText("Đã nạp video. Đang quét Keyframe trong nền...")
+                self._start_keyframe_scan()
+                self.btn_export.setText("⚡ Xuất Video")
+            else:
+                self._keyframes = []
+                self.player_widget.set_keyframes([])
+                self.timeline_widget.set_keyframes([])
+                self.lbl_status.setText("Sẵn sàng (Chế độ âm thanh Lossless - Cắt chính xác từng mili-giây).")
+                self.btn_export.setText("🎵 Xuất Âm Thanh")
 
-            # 4. Quét keyframe và dạng sóng âm thanh không đồng bộ trong nền (không giật lag, không decode ảnh thu nhỏ)
-            self._start_keyframe_scan()
             self._start_audio_waveform_scan()
 
             # 5. Kích hoạt nút Xuất và nút Hủy/Đóng
             self.btn_export.setEnabled(True)
             self.btn_cancel.setEnabled(True)
+
+            # 6. Khởi tạo lịch sử thao tác (Undo/Redo) cho tệp vừa nạp
+            self._history.clear()
+            self._last_committed_state = self._get_current_edit_state()
+            self._update_history_buttons()
 
             # Áp dụng lại tính năng kéo thả đệ quy cho các widget track mới thêm vào
             self._enable_global_drag_drop()
@@ -407,13 +512,14 @@ class MainWindow(QMainWindow):
 
         # Đổi nhãn nút động: Chuyển đổi giữa "⚡ Xuất Video" và "🎵 Xuất Âm Thanh"
         video_streams = [t for t in all_tracks if t.get("codec_type") == "video"]
-        has_video = any(t.get("stream_index") in active_indices for t in video_streams) if video_streams else True
-        if not has_video and any(t.get("codec_type") == "audio" and t.get("stream_index") in active_indices for t in all_tracks):
+        has_active_video = any(t.get("stream_index") in active_indices for t in video_streams) if video_streams else False
+        if not has_active_video and any(t.get("codec_type") == "audio" and t.get("stream_index") in active_indices for t in all_tracks):
             self.btn_export.setText("🎵 Xuất Âm Thanh")
         else:
             self.btn_export.setText("⚡ Xuất Video")
 
         self._update_estimated_size_display()
+        self._record_edit_state()
 
     def _on_in_point_changed(self, in_sec: float):
         self.player_widget.set_cut_range(in_sec, self.timeline_widget.get_out_point())
@@ -469,11 +575,13 @@ class MainWindow(QMainWindow):
         self._keyframes = keyframes
         self.player_widget.set_keyframes(keyframes)
         self.timeline_widget.set_keyframes(keyframes)
-        self.lbl_status.setText(f"Sẵn sàng (Đã nhận diện {len(keyframes)} Keyframes).")
-
-        current_info = self.lbl_video_info.text()
-        if "Keyframes:" not in current_info:
-            self.lbl_video_info.setText(f"{current_info} | Keyframes: {len(keyframes)}")
+        if keyframes:
+            self.lbl_status.setText(f"Sẵn sàng (Đã nhận diện {len(keyframes)} Keyframes).")
+            current_info = self.lbl_video_info.text()
+            if "Keyframes:" not in current_info:
+                self.lbl_video_info.setText(f"{current_info} | Keyframes: {len(keyframes)}")
+        else:
+            self.lbl_status.setText("Sẵn sàng (Chế độ âm thanh Lossless - Cắt chính xác từng mili-giây).")
 
     def _start_audio_waveform_scan(self):
         """Trích xuất dạng sóng âm thanh thực tế cho tất cả các luồng âm thanh trong nền."""
@@ -505,7 +613,7 @@ class MainWindow(QMainWindow):
 
     def _start_cut(self):
         if not self._current_video_path:
-            QMessageBox.warning(self, "Chưa chọn file", "Vui lòng mở video trước khi cắt.")
+            QMessageBox.warning(self, "Chưa chọn file", "Vui lòng mở file video hoặc âm thanh trước khi cắt.")
             return
 
         snap = self.timeline_widget.is_snap_enabled()
@@ -537,19 +645,22 @@ class MainWindow(QMainWindow):
 
         in_sec = self.timeline_widget.get_in_point()
         out_sec = self.timeline_widget.get_out_point()
-        if snap and self._keyframes:
+        total_dur = self.timeline_widget.get_duration() or self._video_info.get("duration", 0.0)
+        render_mode = self.timeline_widget.get_render_mode()
+
+        # Trong chế độ Stream Copy: Chỉ ép In bám Keyframe để tránh lỗi giải mã
+        if render_mode == "copy" and snap and self._keyframes:
             in_sec = self.timeline_widget.snap_to_keyframe(in_sec, force_closest=True)
-            out_sec = self.timeline_widget.snap_to_keyframe(out_sec, force_closest=True)
-            if out_sec <= in_sec:
-                next_kfs = [k for k in self._keyframes if k > in_sec]
-                out_sec = next_kfs[0] if next_kfs else self.timeline_widget.get_duration()
             self.timeline_widget.set_in_point(in_sec)
+
+        # Điểm Out: Nếu ở gần sát hoặc chạm mốc kết thúc video, giữ nguyên 100% thời lượng video
+        if total_dur > 0 and out_sec >= (total_dur - 0.05):
+            out_sec = total_dur
             self.timeline_widget.set_out_point(out_sec)
 
         if out_sec <= in_sec:
-            dur_total = self._video_info.get("duration", 0.0)
-            if dur_total > in_sec:
-                out_sec = dur_total
+            if total_dur > in_sec:
+                out_sec = total_dur
                 self.timeline_widget.set_out_point(out_sec)
 
         if out_sec <= in_sec:
@@ -655,22 +766,50 @@ class MainWindow(QMainWindow):
             pass
 
         try:
-            cmd, eff_start, eff_end = build_cut_command(
-                input_path=self._current_video_path,
-                output_path=chosen_path,
-                start_sec=in_sec,
-                end_sec=out_sec,
-                snap_keyframe=snap,
-                keyframes=self._keyframes,
-                selected_stream_indices=selected_streams if all_tracks else None,
-                snap_mode="closest",
-                rotation=self.player_widget.get_rotation(),
-            )
+            fps_val = float(self._video_info.get("fps", 0.0))
+            rot_val = self.player_widget.get_rotation()
+
+            smart_plan = None
+            if render_mode == "smart" and has_video:
+                smart_plan = analyze_smart_cut_plan(
+                    input_path=self._current_video_path,
+                    output_path=chosen_path,
+                    start_sec=in_sec,
+                    end_sec=out_sec,
+                    keyframes=self._keyframes,
+                    total_duration=total_dur,
+                    video_info=self._video_info,
+                    rotation=rot_val,
+                    selected_stream_indices=selected_streams if all_tracks else None,
+                )
+
+            if smart_plan and smart_plan.needs_smart_cut:
+                eff_start = smart_plan.effective_start
+                eff_end = smart_plan.effective_end
+                cut_duration = max(0.001, eff_end - eff_start)
+                self._worker = SmartCutWorker(smart_plan, parent=self)
+                export_type_label = "🎯 Smart Cut (Chính xác từng khung hình)"
+            else:
+                eff_s = smart_plan.effective_start if smart_plan else in_sec
+                eff_e = smart_plan.effective_end if smart_plan else out_sec
+                cmd, eff_start, eff_end = build_cut_command(
+                    input_path=self._current_video_path,
+                    output_path=chosen_path,
+                    start_sec=eff_s,
+                    end_sec=eff_e,
+                    snap_keyframe=(render_mode == "copy" and snap),
+                    keyframes=self._keyframes,
+                    selected_stream_indices=selected_streams if all_tracks else None,
+                    snap_mode="closest",
+                    rotation=rot_val,
+                    total_duration=total_dur,
+                    fps=fps_val,
+                )
+                cut_duration = max(0.001, eff_end - eff_start)
+                self._worker = CutWorker(cmd, str(chosen_path), cut_duration, parent=self)
         except Exception as e:
             QMessageBox.critical(self, "Lỗi thiết lập lệnh", str(e))
             return
-
-        cut_duration = eff_end - eff_start
 
         # Trạng thái giao diện trong quá trình cắt
         self.btn_export.setEnabled(False)
@@ -681,7 +820,6 @@ class MainWindow(QMainWindow):
             f"Đang xuất [{export_type_label}]: {format_timestamp(eff_start)} -> {format_timestamp(eff_end)} ({cut_duration:.2f}s)..."
         )
 
-        self._worker = CutWorker(cmd, str(chosen_path), cut_duration, parent=self)
         self._worker.progress_changed.connect(lambda val: self.progress_bar.setValue(int(round(val))))
         self._worker.status_message.connect(self.lbl_status.setText)
         self._worker.finished_success.connect(self._on_cut_success)
@@ -696,13 +834,17 @@ class MainWindow(QMainWindow):
                 w.cancel()
                 w.wait(200)
 
-        # 2. Đặt lại thông tin video & keyframe
+        # 2. Đặt lại thông tin video & keyframe và giải phóng tham chiếu worker
+        self._worker = None
+        self._kf_worker = None
+        self._audio_worker = None
+        self._snapshot_worker = None
         self._current_video_path = None
         self._video_info = {}
         self._keyframes = []
 
         # 3. Đặt lại các nhãn & trạng thái giao diện
-        self.lbl_video_info.setText("Chưa chọn video (Kéo thả video vào bất kỳ đâu hoặc bấm 'Mở Video')")
+        self.lbl_video_info.setText("")
         self.lbl_status.setText("Sẵn sàng.")
         self.progress_bar.setVisible(False)
         self.progress_bar.setValue(0)
@@ -718,8 +860,24 @@ class MainWindow(QMainWindow):
         self.player_widget.clear_video()
         self.timeline_widget.clear_timeline()
 
-        # 6. Đảm bảo tính năng kéo & thả vẫn kích hoạt ở mọi nơi
+        # Đặt lại kích thước Splitter về mặc định (1 track)
+        def_h = self.timeline_widget.get_ideal_height(1)
+        tot_h = self.splitter.height()
+        if tot_h <= 100:
+            tot_h = max(600, self.height() - 100)
+        self.splitter.setSizes([max(200, tot_h - def_h), def_h])
+
+        # 6. Đặt lại ngăn xếp lịch sử Undo/Redo
+        self._history.clear()
+        self._last_committed_state = None
+        self._update_history_buttons()
+
+        # 7. Đảm bảo tính năng kéo & thả vẫn kích hoạt ở mọi nơi
         self._enable_global_drag_drop()
+
+        # 8. Thu hồi bộ nhớ RAM tức thì
+        import gc
+        gc.collect()
 
     def _on_cut_success(self, output_path: str):
         self.btn_export.setEnabled(True)
@@ -788,6 +946,100 @@ class MainWindow(QMainWindow):
         label_map = {0: "0° (Gốc)", 90: "90° (Dọc)", 180: "180° (Lộn ngược)", 270: "270° (Dọc ngược)"}
         lbl = label_map.get(rot % 360, f"{rot}°")
         self.lbl_status.setText(f"⟳ Đã chọn góc xoay: {lbl} (Áp dụng khi xuất video & chụp ảnh)")
+        self._record_edit_state()
+
+    def _on_render_mode_changed(self, mode: str):
+        if mode == "smart":
+            self.lbl_status.setText("Chế độ: 🎯 Thông Minh (SmartCut) - Cắt chính xác từng khung hình bất kỳ.")
+        else:
+            self.lbl_status.setText("Chế độ: ⚡ Siêu Tốc (Stream Copy) - 100% Lossless, bám Keyframe.")
+        self._update_estimated_size_display()
+        self._record_edit_state()
+
+    # --- Lịch sử thao tác (Undo / Redo) ---
+    def _get_current_edit_state(self) -> EditState:
+        in_sec = self.timeline_widget.get_in_point()
+        out_sec = self.timeline_widget.get_out_point()
+        active_streams = set(self.timeline_widget.get_selected_stream_indices())
+        rotation = self.player_widget.get_rotation()
+        render_mode = self.timeline_widget.get_render_mode()
+        track_ranges = self.timeline_widget.get_track_ranges()
+        return EditState(
+            in_sec=in_sec,
+            out_sec=out_sec,
+            active_stream_indices=active_streams,
+            rotation=rotation,
+            render_mode=render_mode,
+            track_cut_ranges=track_ranges,
+        )
+
+    def _record_edit_state(self):
+        """Ghi nhận thay đổi biên tập vào ngăn xếp lịch sử Undo."""
+        if not self._current_video_path or self._history.is_applying_history:
+            return
+        new_state = self._get_current_edit_state()
+        if self._last_committed_state is None:
+            self._last_committed_state = new_state
+            self._update_history_buttons()
+            return
+        if self._last_committed_state.is_equal_to(new_state):
+            return
+        self._history.push_state(self._last_committed_state)
+        self._last_committed_state = new_state
+        self._update_history_buttons()
+
+    def _apply_edit_state(self, state: EditState):
+        """Khôi phục trạng thái biên tập từ snapshot lịch sử mà không gây vòng lặp sự kiện."""
+        self._history.set_applying(True)
+        try:
+            # 1. Điểm In & Out
+            self.timeline_widget.set_in_point(state.in_sec)
+            self.timeline_widget.set_out_point(state.out_sec)
+
+            # 2. Chế độ cắt (Stream Copy vs Smart Cut)
+            self.timeline_widget.set_render_mode(state.render_mode, emit_signal=False)
+
+            # 3. Góc xoay video
+            self.player_widget.set_rotation(state.rotation)
+
+            # 4. Kích hoạt track
+            self.timeline_widget.set_active_stream_indices(state.active_stream_indices)
+            self._on_timeline_tracks_changed(sorted(list(state.active_stream_indices)))
+
+            # 5. Cập nhật nhãn dung lượng ước tính
+            self._update_estimated_size_display()
+        finally:
+            self._history.set_applying(False)
+            self._update_history_buttons()
+
+    def _undo(self):
+        """Hoàn tác thao tác chỉnh sửa trước đó (Ctrl+Z)."""
+        if not self._history.can_undo() or not self._current_video_path:
+            return
+        cur = self._get_current_edit_state()
+        prev = self._history.undo(cur)
+        if prev:
+            self._apply_edit_state(prev)
+            self._last_committed_state = prev
+            self.lbl_status.setText("↶ Đã hoàn tác (Undo).")
+
+    def _redo(self):
+        """Làm lại thao tác vừa hoàn tác (Ctrl+Y hoặc Ctrl+Shift+Z)."""
+        if not self._history.can_redo() or not self._current_video_path:
+            return
+        cur = self._get_current_edit_state()
+        nxt = self._history.redo(cur)
+        if nxt:
+            self._apply_edit_state(nxt)
+            self._last_committed_state = nxt
+            self.lbl_status.setText("↷ Đã làm lại (Redo).")
+
+    def _update_history_buttons(self):
+        has_media = bool(self._current_video_path)
+        if hasattr(self, "btn_undo"):
+            self.btn_undo.setEnabled(has_media and self._history.can_undo())
+        if hasattr(self, "btn_redo"):
+            self.btn_redo.setEnabled(has_media and self._history.can_redo())
 
     def _on_decode_mode_changed(self, mode: str):
         label = "Phần cứng GPU (*H/W)" if mode == "hw" else "Phần mềm CPU (S/W - an toàn)"
@@ -822,7 +1074,12 @@ class MainWindow(QMainWindow):
         if not mime_data:
             return None
         from urllib.parse import unquote
-        video_exts = {".mp4", ".mkv", ".mov", ".avi", ".ts", ".webm", ".flv", ".m4v", ".wmv", ".m4a", ".mp3", ".wav"}
+        media_exts = {
+            # Video
+            ".mp4", ".mkv", ".mov", ".avi", ".ts", ".webm", ".flv", ".m4v", ".wmv", ".3gp",
+            # Audio
+            ".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus", ".wma", ".mka",
+        }
         valid_files = []
 
         # 1. Kiểm tra các mục QUrl
@@ -847,7 +1104,7 @@ class MainWindow(QMainWindow):
                     try:
                         p = Path(c_path).resolve()
                         if p.is_file():
-                            if p.suffix.lower() in video_exts:
+                            if p.suffix.lower() in media_exts:
                                 return p
                             valid_files.append(p)
                     except Exception:
@@ -865,7 +1122,7 @@ class MainWindow(QMainWindow):
                 try:
                     p = Path(clean_line).resolve()
                     if p.is_file():
-                        if p.suffix.lower() in video_exts:
+                        if p.suffix.lower() in media_exts:
                             return p
                         valid_files.append(p)
                 except Exception:
@@ -877,7 +1134,7 @@ class MainWindow(QMainWindow):
         if event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
             if event.mimeData() and (event.mimeData().hasUrls() or event.mimeData().hasText()):
                 event.acceptProposedAction()
-                self.lbl_status.setText("📂 Thả video vào bất kỳ đâu để mở ngay...")
+                self.lbl_status.setText("📂 Thả video hoặc âm thanh vào bất kỳ đâu để mở ngay...")
                 return True
         elif event.type() == QEvent.Type.DragLeave:
             if not self._current_video_path:
@@ -901,7 +1158,7 @@ class MainWindow(QMainWindow):
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData() and (event.mimeData().hasUrls() or event.mimeData().hasText()):
             event.acceptProposedAction()
-            self.lbl_status.setText("📂 Thả video vào bất kỳ đâu để mở ngay...")
+            self.lbl_status.setText("📂 Thả video hoặc âm thanh vào bất kỳ đâu để mở ngay...")
 
     def dragMoveEvent(self, event: QDragMoveEvent):
         if event.mimeData() and (event.mimeData().hasUrls() or event.mimeData().hasText()):
@@ -938,6 +1195,15 @@ class MainWindow(QMainWindow):
         key = event.key()
         modifiers = event.modifiers()
 
+        # 0. Hoàn tác (Undo: Ctrl+Z) & Làm lại (Redo: Ctrl+Y / Ctrl+Shift+Z)
+        if key == Qt.Key.Key_Z and (modifiers & Qt.KeyboardModifier.ControlModifier) and not (modifiers & Qt.KeyboardModifier.ShiftModifier):
+            self._undo()
+            return
+        if (key == Qt.Key.Key_Y and (modifiers & Qt.KeyboardModifier.ControlModifier)) or \
+           (key == Qt.Key.Key_Z and (modifiers & Qt.KeyboardModifier.ControlModifier) and (modifiers & Qt.KeyboardModifier.ShiftModifier)):
+            self._redo()
+            return
+
         # 1. Bật/Đóng bảng phím tắt: F1 hoặc ?
         if key == Qt.Key.Key_F1 or key == Qt.Key.Key_Question:
             self._show_shortcuts_dialog()
@@ -972,6 +1238,11 @@ class MainWindow(QMainWindow):
             return
         if key == Qt.Key.Key_O:
             self.timeline_widget._set_out_current()
+            return
+
+        # 6b. Chuyển đổi chế độ cắt (Copy ↔ SmartCut): Phím M hoặc Ctrl + M
+        if key == Qt.Key.Key_M:
+            self.timeline_widget.toggle_render_mode()
             return
 
         # 7. Tua khung hình (Left / Right / Comma / Period)

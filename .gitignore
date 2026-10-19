@@ -1,8 +1,8 @@
 # =====================================================================
-# Git Ignore - Only Code Required to Run the Application
+# Git Ignore - Chỉ Giữ Những Gì Cần Thiết Để Chạy Ứng Dụng
 # =====================================================================
 
-# --- Python & Bytecode ---
+# --- 1. Python & Môi Trường Ảo ---
 __pycache__/
 *.py[cod]
 *$py.class
@@ -18,13 +18,30 @@ venv.bak/
 *.egg-info/
 .eggs/
 
-# --- Temporary & Inspection Scripts ---
-inspect_*.py
-test_*.py
-!src/**
+# --- 2. Tài Liệu, README & Hướng Dẫn (Không đưa lên GitHub) ---
+[Rr][Ee][Aa][Dd][Mm][Ee]*
+[Hh][Dd][Ss][Dd]*
+*.md
+*.txt
+!requirements.txt
 
-# --- Heavy Compiled Binaries & Dynamic Libraries ---
-# (GitHub rejects files > 100MB; tools/ffmpeg.exe is ~138.5MB)
+# --- 3. Đóng Gói & Xuất Bản (Chỉ dùng tạo bản build, không để chạy app) ---
+build/
+dist/
+*.spec
+*.zip
+*.7z
+*.tar.gz
+*.rar
+package_*.py
+build_*.bat
+build_portable.py
+package_app.py
+build_exe.bat
+package_release.py
+build_release.bat
+
+# --- 4. File Nhị Phân Lớn & Thư Viện Portable (Tránh vượt quá giới hạn 100MB của GitHub) ---
 *.exe
 *.dll
 *.so
@@ -33,18 +50,7 @@ test_*.py
 tools/*
 !tools/.gitkeep
 
-# --- Packaging & Distribution Output (Ignore heavy output artifacts) ---
-build/
-dist/
-*.spec
-*.zip
-*.7z
-*.tar.gz
-*.rar
-build_portable.py
-
-# --- Reports, Documents, HTML Exports & Notes ---
-# (App is 100% PySide6, does not require HTML/Doc/Office files to run)
+# --- 5. Báo Cáo, Xuất Bản & Văn Bản Office ---
 *.html
 *.htm
 *_files/
@@ -58,26 +64,27 @@ SO_SANH*
 *.xlsx
 *.xls
 docs/
-*.md
-.superpowers/
 
-# --- AI & Private Workspace Artifacts ---
+# --- 6. Cấu Hình Riêng & AI Workspace ---
 GEMINI.md
 .gemini/
 .system_generated/
+.superpowers/
 scratch/
 *.tmp
 *.bak
 
-# --- Logs, Temporary & Cache Files ---
+# --- 7. Logs & Bộ Nhớ Tạm (Cache) ---
 logs/
 *.log
 cache/
 temp/
 tmp/
 
-# --- Testing & Code Quality Caches ---
+# --- 8. File Kiểm Thử & Đo Đạc (Tests) ---
 tests/
+test_*.py
+inspect_*.py
 .pytest_cache/
 .coverage
 .coverage.*
@@ -85,7 +92,7 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# --- User Media, Test Outputs & Video Exports ---
+# --- 9. Video, Âm Thanh & Ảnh Chụp Màn Hình Của Người Dùng ---
 *.mp4
 *.mkv
 *.mov
@@ -110,7 +117,7 @@ test_videos/
 *_snapshot_*.png
 *.snapshot.png
 
-# --- OS & IDE Specific Files ---
+# --- 10. File Hệ Điều Hành & IDE ---
 .vscode/
 .idea/
 *.swp
@@ -125,12 +132,12 @@ Thumbs.db
 [Dd]esktop.ini
 $RECYCLE.BIN/
 
-# --- Whitelist: Keep Application Code, Scripts & Runtime Assets ---
+# =====================================================================
+# Whitelist - CHỈ GIỮ ĐÚNG CÁC TỆP CẦN THIẾT ĐỂ CHẠY ỨNG DỤNG
+# =====================================================================
 !requirements.txt
 !main.py
 !run.bat
-!package_app.py
-!build_exe.bat
 !src/
 !src/**
 !assets/

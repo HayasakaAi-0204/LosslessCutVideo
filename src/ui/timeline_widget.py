@@ -37,7 +37,11 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 
-from src.core.cutter import format_timestamp, find_nearest_keyframe
+from src.core.cutter import (
+    format_timestamp,
+    find_nearest_keyframe,
+    estimate_output_file_size,
+)
 from src.ui.styles import (
     UNIFIED_BUTTON_STYLE,
     UNIFIED_ICON_BUTTON_STYLE,
@@ -128,6 +132,25 @@ class TimelineCanvas(QWidget):
         self._keyframes = []
         self.update()
 
+    def reset_canvas(self):
+        """Đặt lại hoàn toàn canvas về trạng thái ban đầu khi đóng hoặc hủy video."""
+        self._duration_sec = 0.0
+        self._current_pos_sec = 0.0
+        self._in_point_sec = 0.0
+        self._out_point_sec = 0.0
+        self._tracks = []
+        self._active_stream_indices = set()
+        self._keyframes = []
+        self._thumbnails = []
+        self._audio_waveforms = {}
+        self._track_cut_ranges = {}
+        self._selected_stream_index = None
+        self._drag_mode = None
+        self._cut_mode = "global"
+        self._pixels_per_sec = 50.0
+        self._update_geometry()
+        self.update()
+
     def set_duration(self, duration_sec: float):
         # BẢO VỆ AN TOÀN: Tuyệt đối không ghi đè thời lượng video hợp lệ (> 0) bằng 0 hoặc âm
         # khi media player gặp lỗi giải mã hoặc đang khởi tạo
@@ -190,13 +213,13 @@ class TimelineCanvas(QWidget):
 
     def _update_geometry(self):
         if not self._tracks or self._duration_sec <= 0:
-            h = self.RULER_HEIGHT + self.LANE_HEIGHT + 10
+            h = self.RULER_HEIGHT + self.LANE_HEIGHT
             self.setMinimumSize(600, h)
             self.resize(600, h)
             return
         w = int(max(600.0, self._duration_sec * self._pixels_per_sec + 40))
         track_count = max(1, len(self._tracks))
-        h = self.RULER_HEIGHT + track_count * (self.LANE_HEIGHT + self.LANE_SPACING) + 10
+        h = self.RULER_HEIGHT + track_count * (self.LANE_HEIGHT + self.LANE_SPACING)
         self.setMinimumSize(w, h)
         self.resize(w, h)
 
@@ -758,8 +781,8 @@ class TrackHeadersWidget(QWidget):
         self.setStyleSheet("background-color: #1a1d24; border-right: 1px solid #2c313c;")
 
         self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(4, 0, 4, 4)
-        self._layout.setSpacing(4)
+        self._layout.setContentsMargins(4, 0, 4, 0)
+        self._layout.setSpacing(TimelineCanvas.LANE_SPACING)
 
         # Tiêu đề phía trên khớp với chiều cao của thước đo
         self._top_header = QWidget()
@@ -845,6 +868,15 @@ class TrackHeadersWidget(QWidget):
 
             self._items_layout.addWidget(card)
 
+        track_count = max(1, len(tracks))
+        h = TimelineCanvas.RULER_HEIGHT + track_count * (TimelineCanvas.LANE_HEIGHT + TimelineCanvas.LANE_SPACING)
+        self.setMinimumHeight(h)
+        self.resize(self.width(), h)
+
+    def wheelEvent(self, event: QWheelEvent):
+        # Chuyển tiếp sự kiện lăn chuột lên widget cha để cuộn đồng bộ
+        event.ignore()
+
     def _on_card_clicked(self, stream_index: int, event):
         self.set_selected_stream(stream_index)
         self.track_selected.emit(stream_index)
@@ -897,6 +929,16 @@ class TrackHeadersWidget(QWidget):
                 QPushButton:hover { background-color: #2f3644; color: #a0aec0; border-color: #00d2d3; }
             """)
 
+    def set_active_indices(self, active_indices: set[int]):
+        """Cập nhật trạng thái hiển thị của các nút Giữ/Bỏ track theo danh sách active_indices."""
+        for s_idx, btn in self._track_buttons.items():
+            is_active = (s_idx in active_indices)
+            btn.blockSignals(True)
+            btn.setChecked(is_active)
+            btn.setText("✓ Giữ" if is_active else "✕ Bỏ")
+            self._update_btn_style(btn, is_active)
+            btn.blockSignals(False)
+
 
 class TimelineWidget(QWidget):
     """Widget Timeline đa track phong cách CapCut hoàn chỉnh."""
@@ -907,6 +949,8 @@ class TimelineWidget(QWidget):
     snap_toggled = Signal(bool)
     tracks_changed = Signal(list)  # danh sách chỉ số stream đang kích hoạt
     track_selected = Signal(int)  # chỉ số stream của track được chọn
+    render_mode_changed = Signal(str)  # 'copy' | 'smart'
+    edit_action_completed = Signal()  # Phát khi mốc cắt In/Out hoặc trạng thái chỉnh sửa hoàn tất
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -917,22 +961,24 @@ class TimelineWidget(QWidget):
         self._tracks: list[dict[str, Any]] = []
         self._active_stream_indices: set[int] = set()
 
-        # Trạng thái cắt theo từng track riêng lẻ
         self._cut_mode: str = "global"  # "global" hoặc "per_track"
+        self._render_mode: str = "copy"  # "copy" (Stream Copy) hoặc "smart" (Smart Cut)
         self._selected_stream_index: int | None = None
         self._track_cut_ranges: dict[int, tuple[float, float]] = {}
         self._keyframes: list[float] = []
         self._video_info: dict[str, Any] = {}
 
         self._setup_ui()
+        self.update_height_constraints(1)
 
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(2)
+        main_layout.setSpacing(0)
 
         # 1. Thanh điều khiển phía trên
         ctrl_bar = QWidget()
+        ctrl_bar.setFixedHeight(36)
         ctrl_bar.setStyleSheet("background-color: #1e222b; border-bottom: 1px solid #2c313c;")
         ctrl_layout = QHBoxLayout(ctrl_bar)
         ctrl_layout.setContentsMargins(8, 4, 8, 4)
@@ -951,6 +997,7 @@ class TimelineWidget(QWidget):
         self.btn_set_in = QPushButton("📍 Đặt In [I]")
         self.btn_set_in.setStyleSheet(BUTTON_SET_IN_STYLE)
         self.btn_set_in.setFixedHeight(28)
+        self.btn_set_in.setEnabled(False)
         self.btn_set_in.clicked.connect(self._set_in_current)
         self.lbl_in_val = QLabel("In: 00:00:00.000")
         self.lbl_in_val.setStyleSheet("font-family: monospace; font-weight: bold; color: #2ecc71;")
@@ -959,6 +1006,7 @@ class TimelineWidget(QWidget):
         self.btn_set_out = QPushButton("🏁 Đặt Out [O]")
         self.btn_set_out.setStyleSheet(BUTTON_SET_OUT_STYLE)
         self.btn_set_out.setFixedHeight(28)
+        self.btn_set_out.setEnabled(False)
         self.btn_set_out.clicked.connect(self._set_out_current)
         self.lbl_out_val = QLabel("Out: 00:00:00.000")
         self.lbl_out_val.setStyleSheet("font-family: monospace; font-weight: bold; color: #e74c3c;")
@@ -974,6 +1022,33 @@ class TimelineWidget(QWidget):
         ctrl_layout.addWidget(self.lbl_out_val)
         ctrl_layout.addSpacing(5)
         ctrl_layout.addWidget(self.lbl_cut_dur)
+        ctrl_layout.addSpacing(10)
+
+        # Nút chuyển đổi chế độ cắt: Siêu tốc (Stream Copy) vs Thông minh (Smart Cut)
+        self.btn_render_mode = QPushButton("⚡ Siêu Tốc (Copy)")
+        self.btn_render_mode.setFixedHeight(28)
+        self.btn_render_mode.setStyleSheet("""
+            QPushButton {
+                background-color: #232731;
+                color: #00d2d3;
+                border: 1px solid #3b4252;
+                border-radius: 4px;
+                padding: 2px 10px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #2c313c;
+                border-color: #00d2d3;
+            }
+        """)
+        self.btn_render_mode.setToolTip(
+            "Chế độ cắt video (Phím tắt M hoặc Ctrl+M):\n"
+            "• [⚡ Siêu Tốc (Copy)]: Bám Keyframe, 100% Stream Copy không suy hao (Mặc định).\n"
+            "• [🎯 Thông Minh (SmartCut)]: Cắt chính xác từng khung hình bất kỳ (chỉ mã hóa lại đoạn đầu/đuôi nếu lệch Keyframe)."
+        )
+        self.btn_render_mode.clicked.connect(self._toggle_render_mode)
+        ctrl_layout.addWidget(self.btn_render_mode)
 
         ctrl_layout.addStretch()
 
@@ -1038,10 +1113,18 @@ class TimelineWidget(QWidget):
         tracks_layout.setContentsMargins(0, 0, 0, 0)
         tracks_layout.setSpacing(0)
 
-        # Tiêu đề các track bên trái
+        # Tiêu đề các track bên trái đặt trong ScrollArea ẩn thanh cuộn để đồng bộ cuộn dọc với Canvas
+        self.headers_scroll = QScrollArea()
+        self.headers_scroll.setFixedWidth(220)
+        self.headers_scroll.setWidgetResizable(True)
+        self.headers_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.headers_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.headers_scroll.setStyleSheet("QScrollArea { border: none; background-color: #1a1d24; border-right: 1px solid #2c313c; }")
+
         self.headers_widget = TrackHeadersWidget()
         self.headers_widget.track_toggle_clicked.connect(self._on_track_toggled)
-        tracks_layout.addWidget(self.headers_widget)
+        self.headers_scroll.setWidget(self.headers_widget)
+        tracks_layout.addWidget(self.headers_scroll)
 
         # Canvas bên phải đặt trong ScrollArea
         self.scroll_area = QScrollArea()
@@ -1059,6 +1142,26 @@ class TimelineWidget(QWidget):
 
         self.scroll_area.setWidget(self.canvas)
         tracks_layout.addWidget(self.scroll_area, stretch=1)
+
+        # Đồng bộ cuộn dọc giữa TimelineCanvas và TrackHeadersWidget khi thu nhỏ timeline
+        self.scroll_area.verticalScrollBar().valueChanged.connect(
+            self.headers_scroll.verticalScrollBar().setValue
+        )
+
+        def _forward_headers_wheel(event: QWheelEvent):
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                delta = event.angleDelta().y()
+                if delta != 0:
+                    self._adjust_zoom(10 if delta > 0 else -10)
+                    event.accept()
+                    return
+            delta = event.angleDelta().y()
+            sb = self.scroll_area.verticalScrollBar()
+            sb.setValue(sb.value() - delta // 2)
+            event.accept()
+
+        self.headers_scroll.wheelEvent = _forward_headers_wheel
+        self.headers_widget.wheelEvent = _forward_headers_wheel
 
         # Kết nối tín hiệu chọn track
         self.headers_widget.track_selected.connect(self.select_track)
@@ -1161,6 +1264,59 @@ class TimelineWidget(QWidget):
         """Trả về chế độ cắt hiện tại ('global' | 'per_track')."""
         return self._cut_mode
 
+    def get_render_mode(self) -> str:
+        """Trả về chế độ xử lý xuất ('copy' | 'smart')."""
+        return getattr(self, "_render_mode", "copy")
+
+    def set_render_mode(self, mode: str, emit_signal: bool = True):
+        """Thiết lập chế độ xử lý xuất và cập nhật giao diện nút bấm."""
+        self._render_mode = "smart" if mode == "smart" else "copy"
+        if hasattr(self, "btn_render_mode"):
+            if self._render_mode == "smart":
+                self.btn_render_mode.setText("🎯 Thông Minh (SmartCut)")
+                self.btn_render_mode.setStyleSheet("""
+                    QPushButton {
+                        background-color: #1e3a40;
+                        color: #00d2d3;
+                        border: 1px solid #00d2d3;
+                        border-radius: 4px;
+                        padding: 2px 10px;
+                        font-weight: bold;
+                        font-size: 11px;
+                    }
+                    QPushButton:hover {
+                        background-color: #234850;
+                    }
+                """)
+            else:
+                self.btn_render_mode.setText("⚡ Siêu Tốc (Copy)")
+                self.btn_render_mode.setStyleSheet("""
+                    QPushButton {
+                        background-color: #232731;
+                        color: #00d2d3;
+                        border: 1px solid #3b4252;
+                        border-radius: 4px;
+                        padding: 2px 10px;
+                        font-weight: bold;
+                        font-size: 11px;
+                    }
+                    QPushButton:hover {
+                        background-color: #2c313c;
+                        border-color: #00d2d3;
+                    }
+                """)
+        self._update_time_labels()
+        if emit_signal:
+            self.render_mode_changed.emit(self._render_mode)
+
+    def _toggle_render_mode(self):
+        new_mode = "smart" if self.get_render_mode() == "copy" else "copy"
+        self.set_render_mode(new_mode)
+
+    def toggle_render_mode(self):
+        """Hàm công khai cho phép gọi từ phím tắt bàn phím (Phím M hoặc Ctrl+M)."""
+        self._toggle_render_mode()
+
     def clear_preview_data(self):
         """Xóa bộ nhớ đệm ảnh thu nhỏ và dạng sóng khi tải một tệp mới hoàn toàn."""
         self.canvas.clear_preview_data()
@@ -1177,16 +1333,14 @@ class TimelineWidget(QWidget):
         self._selected_stream_index = None
 
         self._cut_mode = "global"
+        self.set_render_mode("copy")
 
         self._keyframes = []
         self._video_info = {}
-        self.canvas.clear_preview_data()
-        self.canvas.set_cut_mode("global")
-        self.canvas.set_selected_stream(None)
-        self.canvas.set_track_ranges({})
-        self.canvas.set_tracks([], set())
-        self.canvas.set_duration(0.0)
+        self.canvas.reset_canvas()
         self.headers_widget.set_tracks([], set())
+        self.zoom_slider.setValue(0)
+        self.update_height_constraints(1)
         self._update_time_labels()
 
     def set_video_info(self, info: dict[str, Any]):
@@ -1218,7 +1372,7 @@ class TimelineWidget(QWidget):
     def set_position(self, position_ms: int):
         self._current_pos_sec = position_ms / 1000.0
         self.canvas.set_position(self._current_pos_sec)
-        self._update_time_labels()
+        self._update_playback_time_label()
 
         # Tự động cuộn mượt mà trong khi phát nếu con trỏ phát tiến gần ranh giới khung nhìn
         if self.canvas._drag_mode is None and self._duration_sec > 0:
@@ -1234,6 +1388,31 @@ class TimelineWidget(QWidget):
             elif play_x < cur_scroll:
                 sb.setValue(int(max(0, play_x - margin)))
 
+    def get_ideal_height(self, track_count: int | None = None) -> int:
+        """Tính toán chiều cao lý tưởng để hiển thị vừa khít các track, tối đa 5 track.
+        
+        Giới hạn trần tối đa hiển thị 5 track (304px) để tránh timeline quá lớn chiếm hết màn hình video.
+        Nếu video có hơn 5 track, các track còn lại được cuộn dọc mượt mà.
+        """
+        if track_count is None:
+            track_count = len(self._tracks)
+        count = max(1, min(5, track_count))
+        # Toolbar (36px) + Ruler (28px) + Tracks (count * 48px) = 64 + count * 48
+        return 64 + count * 48
+
+    def get_min_height(self) -> int:
+        """Kích thước tối thiểu của Timeline: Vừa khít đúng 1 track + thanh công cụ + thước đo."""
+        return self.get_ideal_height(1)
+
+    def update_height_constraints(self, track_count: int | None = None):
+        """Cập nhật ràng buộc minHeight và maxHeight cho Timeline theo số lượng track thực tế."""
+        if track_count is None:
+            track_count = len(self._tracks)
+        min_h = self.get_min_height()
+        ideal_h = self.get_ideal_height(track_count)
+        self.setMinimumHeight(min_h)
+        self.setMaximumHeight(ideal_h)
+
     def set_tracks(self, tracks: list[dict[str, Any]]):
         self._tracks = tracks
         self._active_stream_indices = {t.get("stream_index", i) for i, t in enumerate(tracks)}
@@ -1243,6 +1422,7 @@ class TimelineWidget(QWidget):
             for i, t in enumerate(tracks)
         }
 
+        self.update_height_constraints(len(tracks))
         self.headers_widget.set_tracks(self._tracks, self._active_stream_indices)
         self.headers_widget.set_selected_stream(self._selected_stream_index)
         self.canvas.set_tracks(self._tracks, self._active_stream_indices)
@@ -1257,7 +1437,12 @@ class TimelineWidget(QWidget):
         if self._keyframes:
             video_idx = self._get_master_video_stream_index()
             snapped_in = self.snap_to_keyframe(self._in_point_sec, force_closest=True)
-            snapped_out = self.snap_to_keyframe(self._out_point_sec, force_closest=True)
+            # Điểm Out: Nếu đang ở cuối video (hoặc chưa chỉnh sửa), GIỮ NGUYÊN duration_sec
+            if self._out_point_sec >= (self._duration_sec - 0.05) or self._out_point_sec <= 0:
+                snapped_out = self._duration_sec
+            else:
+                snapped_out = self._out_point_sec
+
             if snapped_out <= snapped_in:
                 next_kfs = [k for k in self._keyframes if k > snapped_in]
                 snapped_out = next_kfs[0] if next_kfs else self._duration_sec
@@ -1323,8 +1508,8 @@ class TimelineWidget(QWidget):
         return self._in_point_sec
 
     def get_out_point(self) -> float:
-        if self._keyframes:
-            return self.snap_to_keyframe(self._out_point_sec, force_closest=True)
+        if self._duration_sec > 0 and self._out_point_sec >= (self._duration_sec - 0.05):
+            return self._duration_sec
         return self._out_point_sec
 
     def set_in_point(self, in_sec: float):
@@ -1410,29 +1595,40 @@ class TimelineWidget(QWidget):
         self.zoom_slider.setValue(target_val)
 
     def _on_drag_finished(self, mode: str):
-        if not self._keyframes:
-            return
-
         if mode == "in":
-            snapped = self.snap_to_keyframe(self._in_point_sec, force_closest=True)
-            if snapped < self._out_point_sec:
-                self._in_point_sec = snapped
-                for s_idx in self._track_cut_ranges:
-                    self._track_cut_ranges[s_idx] = (self._in_point_sec, self._out_point_sec)
-                self.canvas.set_in_point(self._in_point_sec)
-                self.canvas.set_track_ranges(self._track_cut_ranges)
-                self._update_time_labels()
-                self.in_point_changed.emit(self._in_point_sec)
+            if self._keyframes:
+                snapped = self.snap_to_keyframe(self._in_point_sec, force_closest=True)
+                if snapped < self._out_point_sec:
+                    self._in_point_sec = snapped
+            for s_idx in self._track_cut_ranges:
+                self._track_cut_ranges[s_idx] = (self._in_point_sec, self._out_point_sec)
+            self.canvas.set_in_point(self._in_point_sec)
+            self.canvas.set_track_ranges(self._track_cut_ranges)
+            self._update_time_labels()
+            self.in_point_changed.emit(self._in_point_sec)
+            self.edit_action_completed.emit()
         elif mode == "out":
-            snapped = self.snap_to_keyframe(self._out_point_sec, force_closest=True)
-            if snapped > self._in_point_sec:
-                self._out_point_sec = snapped
-                for s_idx in self._track_cut_ranges:
-                    self._track_cut_ranges[s_idx] = (self._in_point_sec, self._out_point_sec)
-                self.canvas.set_out_point(self._out_point_sec)
-                self.canvas.set_track_ranges(self._track_cut_ranges)
-                self._update_time_labels()
-                self.out_point_changed.emit(self._out_point_sec)
+            if self._duration_sec > 0 and self._out_point_sec >= (self._duration_sec - 0.3):
+                self._out_point_sec = self._duration_sec
+            elif getattr(self, "_render_mode", "copy") == "copy" and self._keyframes:
+                snapped = self.snap_to_keyframe(self._out_point_sec, force_closest=False)
+                if snapped > self._in_point_sec:
+                    self._out_point_sec = snapped
+            for s_idx in self._track_cut_ranges:
+                self._track_cut_ranges[s_idx] = (self._in_point_sec, self._out_point_sec)
+            self.canvas.set_out_point(self._out_point_sec)
+            self.canvas.set_track_ranges(self._track_cut_ranges)
+            self._update_time_labels()
+            self.out_point_changed.emit(self._out_point_sec)
+            self.edit_action_completed.emit()
+
+    def set_active_stream_indices(self, indices: set[int]):
+        """Cập nhật các stream đang kích hoạt (dùng cho Undo/Redo)."""
+        self._active_stream_indices = set(indices)
+        self.canvas.set_active_stream_indices(self._active_stream_indices)
+        if hasattr(self, "headers_widget"):
+            self.headers_widget.set_active_indices(self._active_stream_indices)
+        self._update_time_labels()
 
     def _on_track_toggled(self, stream_index: int, is_active: bool):
         if is_active:
@@ -1448,7 +1644,7 @@ class TimelineWidget(QWidget):
         self.seek_requested.emit(pos_ms)
 
     def _on_in_dragged(self, in_sec: float):
-        if self._keyframes:
+        if getattr(self, "_render_mode", "copy") == "copy" and self._keyframes:
             in_sec = self.snap_to_keyframe(in_sec)
 
         self._in_point_sec = min(in_sec, self._out_point_sec - 0.05)
@@ -1460,10 +1656,13 @@ class TimelineWidget(QWidget):
         self.in_point_changed.emit(self._in_point_sec)
 
     def _on_out_dragged(self, out_sec: float):
-        if self._keyframes:
-            out_sec = self.snap_to_keyframe(out_sec)
+        if self._duration_sec > 0 and out_sec >= (self._duration_sec - 0.2):
+            self._out_point_sec = self._duration_sec
+        else:
+            if getattr(self, "_render_mode", "copy") == "copy" and self._keyframes:
+                out_sec = self.snap_to_keyframe(out_sec)
+            self._out_point_sec = max(out_sec, self._in_point_sec + 0.05)
 
-        self._out_point_sec = max(out_sec, self._in_point_sec + 0.05)
         for s_idx in self._track_cut_ranges:
             self._track_cut_ranges[s_idx] = (self._in_point_sec, self._out_point_sec)
         self.canvas.set_out_point(self._out_point_sec)
@@ -1473,7 +1672,7 @@ class TimelineWidget(QWidget):
 
     def _set_in_current(self):
         pos = self._current_pos_sec
-        if self._keyframes:
+        if getattr(self, "_render_mode", "copy") == "copy" and self._keyframes:
             pos = self.snap_to_keyframe(pos, force_closest=True)
             self._current_pos_sec = pos
             self.canvas.set_position(pos)
@@ -1486,10 +1685,13 @@ class TimelineWidget(QWidget):
         self.canvas.set_track_ranges(self._track_cut_ranges)
         self._update_time_labels()
         self.in_point_changed.emit(self._in_point_sec)
+        self.edit_action_completed.emit()
 
     def _set_out_current(self):
         pos = self._current_pos_sec
-        if self._keyframes:
+        if self._duration_sec > 0 and pos >= (self._duration_sec - 0.2):
+            pos = self._duration_sec
+        elif getattr(self, "_render_mode", "copy") == "copy" and self._keyframes:
             pos = self.snap_to_keyframe(pos, force_closest=True)
             self._current_pos_sec = pos
             self.canvas.set_position(pos)
@@ -1502,11 +1704,22 @@ class TimelineWidget(QWidget):
         self.canvas.set_track_ranges(self._track_cut_ranges)
         self._update_time_labels()
         self.out_point_changed.emit(self._out_point_sec)
+        self.edit_action_completed.emit()
 
-    def _update_time_labels(self):
+    def _update_playback_time_label(self):
+        """Cập nhật nhãn thời gian phát hiện tại siêu nhẹ (0% CPU overhead trong nhịp phát video)."""
         cur_str = format_timestamp(self._current_pos_sec)
         dur_str = format_timestamp(self._duration_sec)
         self.lbl_time_display.setText(f"{cur_str} / {dur_str}")
+
+    def _update_time_labels(self):
+        has_media = self._duration_sec > 0
+        if hasattr(self, "btn_set_in"):
+            self.btn_set_in.setEnabled(has_media)
+        if hasattr(self, "btn_set_out"):
+            self.btn_set_out.setEnabled(has_media)
+
+        self._update_playback_time_label()
 
         act_in = self._in_point_sec
         act_out = self._out_point_sec
@@ -1515,16 +1728,16 @@ class TimelineWidget(QWidget):
         self.lbl_out_val.setText(f"Out: {format_timestamp(act_out)}")
 
         cut_dur = max(0.0, act_out - act_in)
+        mode_tag = " [⚡ Siêu Tốc]" if getattr(self, "_render_mode", "copy") == "copy" else " [🎯 Smart Cut]"
         if self._video_info and cut_dur > 0:
-            from src.core.cutter import estimate_output_file_size
             _, size_str = estimate_output_file_size(
                 cut_dur,
                 self._video_info,
                 self._active_stream_indices,
             )
-            self.lbl_cut_dur.setText(f"Thời lượng cắt: {format_timestamp(cut_dur)} ({size_str})")
+            self.lbl_cut_dur.setText(f"Thời lượng cắt: {format_timestamp(cut_dur)} ({size_str}){mode_tag}")
         else:
-            self.lbl_cut_dur.setText(f"Thời lượng cắt: {format_timestamp(cut_dur)}")
+            self.lbl_cut_dur.setText(f"Thời lượng cắt: {format_timestamp(cut_dur)}{mode_tag}")
 
     def _on_zoom_slider_changed(self, val: int):
         # Neo vị trí thu phóng xung quanh con trỏ phát nếu đang trong tầm nhìn, ngược lại neo vào giữa khung nhìn

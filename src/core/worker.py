@@ -104,7 +104,7 @@ class CutWorker(QThread):
             self._process = subprocess.Popen(
                 self.cmd,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 universal_newlines=True,
                 encoding="utf-8",
@@ -162,15 +162,21 @@ class KeyframeWorker(QThread):
         super().__init__(parent)
         self.video_path = Path(video_path).resolve()
         self._is_cancelled = False
+        self._process: Optional[subprocess.Popen] = None
 
     def cancel(self):
         self._is_cancelled = True
+        if self._process and self._process.poll() is None:
+            try:
+                self._process.kill()
+            except Exception:
+                pass
 
     def run(self):
         from src.core.probe import get_keyframe_timestamps
 
         try:
-            keyframes = get_keyframe_timestamps(self.video_path, timeout=15.0)
+            keyframes = get_keyframe_timestamps(self.video_path, timeout=15.0, worker_ref=self)
             if not self._is_cancelled:
                 self.keyframes_ready.emit(keyframes)
         except Exception as e:
@@ -210,6 +216,11 @@ class AudioWaveformWorker(QThread):
 
         debug_log_path = get_project_root() / "cache" / "waveform_debug.log"
         debug_log_path.parent.mkdir(parents=True, exist_ok=True)
+        if debug_log_path.exists() and debug_log_path.stat().st_size > 1024 * 1024:
+            try:
+                debug_log_path.write_text("", encoding="utf-8")
+            except Exception:
+                pass
 
         with open(debug_log_path, "a", encoding="utf-8") as log_f:
             log_f.write(f"\n--- Bắt đầu trích xuất sóng âm cho {self.video_path.name} ({len(self.audio_streams)} audio streams) ---\n")
@@ -247,11 +258,27 @@ class AudioWaveformWorker(QThread):
                         stderr=subprocess.PIPE,
                         creationflags=creationflags,
                     )
-                    out, err = self._process.communicate(timeout=15)
+                    out, err = self._process.communicate(timeout=45)
                     if out and len(out) >= 80:
                         raw_bytes = out
                         break
+                except subprocess.TimeoutExpired:
+                    if self._process:
+                        try:
+                            self._process.kill()
+                            self._process.communicate()
+                        except Exception:
+                            pass
+                    with open(debug_log_path, "a", encoding="utf-8") as log_f:
+                        log_f.write(f"Stream {s_idx} map {map_arg}: Timeout sau 45s.\n")
+                    continue
                 except Exception as ex:
+                    if self._process:
+                        try:
+                            self._process.kill()
+                            self._process.communicate()
+                        except Exception:
+                            pass
                     with open(debug_log_path, "a", encoding="utf-8") as log_f:
                         log_f.write(f"Lỗi Stream {s_idx} map {map_arg}: {ex}\n")
                     continue
@@ -267,6 +294,7 @@ class AudioWaveformWorker(QThread):
             pcm = array.array("h")
             # Đảm bảo số lượng byte chẵn
             pcm.frombytes(raw_bytes[: len(raw_bytes) - (len(raw_bytes) % 2)])
+            del raw_bytes  # Giải phóng ngay lập tức mảng byte thô hàng chục MB
             num_samples = len(pcm)
 
             # 40 mẫu tại 8000 Hz = 5ms mỗi đỉnh peak (200 peaks/giây)
@@ -277,6 +305,7 @@ class AudioWaveformWorker(QThread):
                 chunk = pcm[i : i + window]
                 m = max(abs(x) for x in chunk) / 32768.0
                 raw_peaks.append(m)
+            del pcm  # Giải phóng mảng PCM sau khi đã lấy các đỉnh thô
 
             # --- Chuẩn hóa độ tương phản thích ứng (Adaptive Contrast Normalization) ---
             # Tách biệt tiếng ồn phòng xung quanh khỏi các âm thanh gõ phím sắc nét
@@ -302,6 +331,7 @@ class AudioWaveformWorker(QThread):
                         # Lũy thừa 0.55 giúp các âm gõ nhẹ nổi bật rõ ràng (chiều cao 30%-95%)
                         val = math.pow(ratio, 0.55) * 0.95
                         scaled_peaks.append(round(min(1.0, val), 4))
+                del non_silent, sorted_peaks
             else:
                 max_val = max(raw_peaks) if raw_peaks else 0.0
                 if max_val > 0.003:
@@ -309,6 +339,7 @@ class AudioWaveformWorker(QThread):
                     scaled_peaks = [min(1.0, round(p * scale, 4)) for p in raw_peaks]
                 else:
                     scaled_peaks = [0.0] * len(raw_peaks)
+            del raw_peaks  # Giải phóng mảng raw_peaks
 
             waveforms[s_idx] = scaled_peaks
             with open(debug_log_path, "a", encoding="utf-8") as log_f:
@@ -362,7 +393,23 @@ class SnapshotWorker(QThread):
                 creationflags=creationflags,
             )
             _, stderr = self._process.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            if self._process:
+                try:
+                    self._process.kill()
+                    self._process.communicate()
+                except Exception:
+                    pass
+            if not self._is_cancelled:
+                self.failed.emit("Quá thời gian trích xuất ảnh chụp (Timeout 15s).")
+            return
         except Exception as e:
+            if self._process:
+                try:
+                    self._process.kill()
+                    self._process.communicate()
+                except Exception:
+                    pass
             if not self._is_cancelled:
                 self.failed.emit(f"Lỗi khi chụp ảnh: {str(e)}")
             return
@@ -377,6 +424,183 @@ class SnapshotWorker(QThread):
         else:
             err = stderr.decode("utf-8", errors="ignore").strip() if stderr else "Không tạo được file ảnh"
             self.failed.emit(err)
+
+
+class SmartCutWorker(QThread):
+    """Luồng ngầm thực thi chuỗi tác vụ Smart Cut đa phân đoạn (Head -> Body -> Tail -> Concat)."""
+
+    progress_changed = Signal(float)
+    status_message = Signal(str)
+    finished_success = Signal(str)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        plan: Any,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.plan = plan
+        self._current_process: Optional[subprocess.Popen] = None
+        self._is_cancelled = False
+
+    def cancel(self):
+        self._is_cancelled = True
+        if self._current_process and self._current_process.poll() is None:
+            try:
+                self._current_process.terminate()
+            except Exception:
+                pass
+        from src.core.smart_cutter import cleanup_smartcut_job
+        cleanup_smartcut_job(self.plan.job_dir)
+        if self.plan.final_output and Path(self.plan.final_output).exists():
+            try:
+                Path(self.plan.final_output).unlink()
+            except Exception:
+                pass
+
+    def run(self):
+        import shutil
+        from src.core.smart_cutter import cleanup_smartcut_job
+        self._is_cancelled = False
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        total_segs = len(self.plan.segments)
+
+        try:
+            # 1. Trường hợp chỉ có 1 phân đoạn (Sub-GOP)
+            if total_segs == 1 and self.plan.segments[0].name == "single":
+                seg = self.plan.segments[0]
+                self.status_message.emit("Đang mã hóa đoạn ngắn chính xác từng frame...")
+                self.progress_changed.emit(10.0)
+                self._run_cmd(seg.cmd, max(0.001, seg.end_sec - seg.start_sec), creationflags)
+                if self._is_cancelled:
+                    return
+
+                # Nếu có lượt xoay container metadata
+                if self.plan.rotation_cmd:
+                    self.status_message.emit("Đang áp dụng góc xoay metadata...")
+                    self.progress_changed.emit(90.0)
+                    self._run_cmd(self.plan.rotation_cmd, 1.0, creationflags, base_pct=90.0, weight=10.0)
+                    if self._is_cancelled:
+                        return
+                else:
+                    if self.plan.temp_target and Path(self.plan.temp_target).is_file():
+                        final_p = Path(self.plan.final_output)
+                        if final_p.exists():
+                            final_p.unlink()
+                        shutil.move(str(self.plan.temp_target), str(final_p))
+
+                final_p = Path(self.plan.final_output)
+                if final_p.is_file() and final_p.stat().st_size > 0:
+                    self.progress_changed.emit(100.0)
+                    self.status_message.emit("Smart Cut hoàn tất thành công!")
+                    cleanup_smartcut_job(self.plan.job_dir)
+                    self.finished_success.emit(str(final_p))
+                else:
+                    cleanup_smartcut_job(self.plan.job_dir)
+                    self.failed.emit("Không tạo được file đích sau khi xử lý.")
+                return
+
+            # 2. Trường hợp đa phân đoạn
+            total_duration = max(0.001, self.plan.effective_end - self.plan.effective_start)
+            processed_duration = 0.0
+
+            for i, seg in enumerate(self.plan.segments):
+                if self._is_cancelled:
+                    return
+
+                seg_dur = max(0.001, seg.end_sec - seg.start_sec)
+                label_map = {
+                    "head": f"[{i+1}/{total_segs+1}] Đang mã hóa đoạn đầu để bắt chuẩn khung hình...",
+                    "body": f"[{i+1}/{total_segs+1}] Đang sao chép phần thân (100% Lossless Stream Copy)...",
+                    "tail": f"[{i+1}/{total_segs+1}] Đang mã hóa đoạn kết...",
+                }
+                msg = label_map.get(seg.name, f"[{i+1}/{total_segs+1}] Đang xử lý phân đoạn {seg.name}...")
+                self.status_message.emit(msg)
+
+                base_pct = (processed_duration / total_duration) * 85.0
+                seg_weight = (seg_dur / total_duration) * 85.0
+
+                self._run_cmd(seg.cmd, seg_dur, creationflags, base_pct=base_pct, weight=seg_weight)
+                if self._is_cancelled:
+                    return
+
+                processed_duration += seg_dur
+
+            # 3. Ghép file bằng FFmpeg Concat Demuxer
+            if self._is_cancelled:
+                return
+
+            self.status_message.emit(f"[{total_segs+1}/{total_segs+1}] Đang ghép các phân đoạn thành file hoàn chỉnh...")
+            self.progress_changed.emit(87.0)
+
+            self._run_cmd(self.plan.concat_cmd, 1.0, creationflags, base_pct=87.0, weight=8.0)
+            if self._is_cancelled:
+                return
+
+            # 4. Áp dụng góc xoay metadata vào container nếu có
+            if self.plan.rotation_cmd:
+                self.status_message.emit("Đang áp dụng góc xoay metadata vào container...")
+                self.progress_changed.emit(95.0)
+                self._run_cmd(self.plan.rotation_cmd, 1.0, creationflags, base_pct=95.0, weight=5.0)
+                if self._is_cancelled:
+                    return
+
+            final_p = Path(self.plan.final_output)
+            if final_p.is_file() and final_p.stat().st_size > 0:
+                self.progress_changed.emit(100.0)
+                self.status_message.emit("Smart Cut hoàn tất thành công 100%!")
+                cleanup_smartcut_job(self.plan.job_dir)
+                self.finished_success.emit(str(final_p))
+            else:
+                cleanup_smartcut_job(self.plan.job_dir)
+                self.failed.emit("Không tạo được file đích sau khi ghép Smart Cut.")
+
+        except Exception as e:
+            cleanup_smartcut_job(self.plan.job_dir)
+            if not self._is_cancelled:
+                self.failed.emit(f"Lỗi Smart Cut: {str(e)}")
+
+    def _run_cmd(
+        self,
+        cmd: list[str],
+        duration: float,
+        creationflags: int,
+        base_pct: float = 0.0,
+        weight: float = 100.0,
+    ):
+        self._current_process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=creationflags,
+        )
+
+        stderr_tail: list[str] = []
+        if self._current_process.stderr:
+            for line in self._current_process.stderr:
+                if self._is_cancelled:
+                    break
+                if len(stderr_tail) >= 10:
+                    stderr_tail.pop(0)
+                stderr_tail.append(line)
+                pct = parse_ffmpeg_progress(line, duration)
+                if pct is not None:
+                    overall_pct = min(99.0, base_pct + (pct / 100.0) * weight)
+                    self.progress_changed.emit(overall_pct)
+
+        self._current_process.wait()
+        rc = self._current_process.returncode
+        self._current_process = None
+
+        if not self._is_cancelled and rc != 0:
+            tail_msg = "".join(stderr_tail).strip()
+            raise RuntimeError(f"Lệnh FFmpeg thất bại (code {rc}):\n{tail_msg}")
+
 
 
 

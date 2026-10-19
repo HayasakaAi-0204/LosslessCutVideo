@@ -12,6 +12,7 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QWidget,
+    QFrame,
     QVBoxLayout,
     QHBoxLayout,
     QPushButton,
@@ -171,6 +172,7 @@ class PlayerWidget(QWidget):
     position_changed = Signal(int)   # ms
     duration_changed = Signal(int)   # ms
     file_dropped = Signal(Path)
+    open_file_requested = Signal()
     speed_changed = Signal(float)   # Tốc độ phát (0.25 .. 2.0)
     snapshot_requested = Signal()
     rotation_changed = Signal(int)
@@ -208,6 +210,7 @@ class PlayerWidget(QWidget):
 
         self._setup_ui()
         self._setup_player()
+        self._show_active_video_layer()
 
     @property
     def video_widget(self):
@@ -217,6 +220,14 @@ class PlayerWidget(QWidget):
 
     def _show_active_video_layer(self):
         """Hiển thị đúng layer video tương ứng với engine và trạng thái hiện tại."""
+        if not getattr(self, "_current_file_path", None):
+            if hasattr(self, "overlay_empty"):
+                self.viewport_stack.setCurrentWidget(self.overlay_empty)
+            return
+        if not getattr(self, "_has_video", True):
+            if hasattr(self, "overlay_audio"):
+                self.viewport_stack.setCurrentWidget(self.overlay_audio)
+            return
         if not self.is_video_enabled():
             self.viewport_stack.setCurrentWidget(self.overlay_disabled)
         elif getattr(self, "_player_failed", False):
@@ -324,11 +335,101 @@ class PlayerWidget(QWidget):
 
         self.viewport_stack.addWidget(self.overlay_fallback)
 
+        # Lớp 4: Khung hiển thị âm thanh chuyên dụng (Audio-only mode)
+        self.overlay_audio = QWidget(self)
+        self.overlay_audio.setStyleSheet("background-color: #0f1115; border-radius: 4px;")
+        audio_layout = QVBoxLayout(self.overlay_audio)
+        audio_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        audio_layout.setContentsMargins(16, 16, 16, 16)
+        audio_layout.setSpacing(10)
+
+        lbl_audio_icon = QLabel("🎵")
+        lbl_audio_icon.setStyleSheet("font-size: 54px;")
+        lbl_audio_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.lbl_audio_title = QLabel("Tệp Âm Thanh")
+        self.lbl_audio_title.setStyleSheet("color: #00d2d3; font-size: 16px; font-weight: bold;")
+        self.lbl_audio_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.lbl_audio_desc = QLabel(
+            "Đang ở chế độ Âm thanh Lossless (0% Re-encoding)\n"
+            "Cắt chính xác từng mili-giây tại bất kỳ vị trí nào trên Timeline!"
+        )
+        self.lbl_audio_desc.setStyleSheet("color: #8b949e; font-size: 12px; line-height: 1.4;")
+        self.lbl_audio_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        audio_layout.addWidget(lbl_audio_icon)
+        audio_layout.addWidget(self.lbl_audio_title)
+        audio_layout.addWidget(self.lbl_audio_desc)
+        self.viewport_stack.addWidget(self.overlay_audio)
+
+        # Lớp 5: Khung hiển thị trạng thái chờ (Chưa chọn file - Vùng đón file Dropzone)
+        self.overlay_empty = QWidget(self)
+        self.overlay_empty.setStyleSheet("background-color: #0f1115; border-radius: 4px;")
+        self.overlay_empty.setCursor(Qt.CursorShape.PointingHandCursor)
+        empty_layout = QVBoxLayout(self.overlay_empty)
+        empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.setContentsMargins(24, 24, 24, 24)
+
+        card_box = QFrame(self.overlay_empty)
+        card_box.setStyleSheet("""
+            QFrame {
+                background-color: #16181d;
+                border: 2px dashed #2c313c;
+                border-radius: 12px;
+                padding: 28px 40px;
+            }
+            QFrame:hover {
+                border-color: #00d2d3;
+                background-color: #1a1e26;
+            }
+        """)
+        card_layout = QVBoxLayout(card_box)
+        card_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.setSpacing(10)
+
+        lbl_empty_icon = QLabel("🎬  🎵", card_box)
+        lbl_empty_icon.setStyleSheet("font-size: 52px; border: none; background: transparent;")
+        lbl_empty_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        lbl_empty_title = QLabel("Kéo & thả video hoặc âm thanh vào đây", card_box)
+        lbl_empty_title.setStyleSheet("color: #ffffff; font-size: 18px; font-weight: bold; border: none; background: transparent;")
+        lbl_empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        lbl_empty_sub = QLabel("hoặc nhấp chuột vào đây để chọn tệp từ máy tính (Phím tắt Ctrl+O)", card_box)
+        lbl_empty_sub.setStyleSheet("color: #00d2d3; font-size: 13px; font-weight: 500; border: none; background: transparent;")
+        lbl_empty_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        lbl_empty_hint = QLabel(
+            "Hỗ trợ MP4, MKV, MOV, TS, WEBM, FLV, MP3, M4A, FLAC, WAV, AAC, OPUS...\n"
+            "Cắt siêu tốc 100% nguyên bản (Stream Copy Lossless, 0% Re-encoding)",
+            card_box,
+        )
+        lbl_empty_hint.setStyleSheet("color: #8b949e; font-size: 12px; line-height: 1.5; border: none; background: transparent;")
+        lbl_empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        card_layout.addWidget(lbl_empty_icon)
+        card_layout.addWidget(lbl_empty_title)
+        card_layout.addWidget(lbl_empty_sub)
+        card_layout.addSpacing(4)
+        card_layout.addWidget(lbl_empty_hint)
+
+        def on_empty_click(event):
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.open_file_requested.emit()
+
+        self.overlay_empty.mousePressEvent = on_empty_click
+        card_box.mousePressEvent = on_empty_click
+        empty_layout.addWidget(card_box)
+        self.viewport_stack.addWidget(self.overlay_empty)
+
         # Gắn viewport trực tiếp vào layout chính
         layout.addWidget(self.viewport_stack, stretch=1)
 
         # Thanh công cụ điều khiển
-        controls_layout = QHBoxLayout()
+        self.controls_bar = QWidget(self)
+        controls_layout = QHBoxLayout(self.controls_bar)
+        controls_layout.setContentsMargins(0, 4, 0, 0)
 
         self.btn_prev_kf = QPushButton("⏮ Keyframe Trước")
         self.btn_prev_kf.setToolTip("Nhảy lùi về Keyframe (I-frame) gần nhất")
@@ -460,7 +561,8 @@ class PlayerWidget(QWidget):
         controls_layout.addWidget(self.lbl_vol)
         controls_layout.addWidget(self.slider_vol)
 
-        layout.addLayout(controls_layout)
+        layout.addWidget(self.controls_bar)
+        self.controls_bar.setVisible(False)
 
     def _setup_player(self):
         """Khởi tạo engine phát video.
@@ -583,7 +685,13 @@ class PlayerWidget(QWidget):
         try:
             log_dir = get_project_root() / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
-            with open(log_dir / "player_error.log", "a", encoding="utf-8") as f:
+            log_path = log_dir / "player_error.log"
+            if log_path.exists() and log_path.stat().st_size > 512 * 1024:
+                try:
+                    log_path.write_text("", encoding="utf-8")
+                except Exception:
+                    pass
+            with open(log_path, "a", encoding="utf-8") as f:
                 p_err = self._qt_player.errorString() if self._qt_player else ""
                 f.write(f"[{datetime.now().isoformat()}] Code: {error} | Msg: {error_string} | PlayerErr: {p_err}\n")
         except Exception:
@@ -649,18 +757,45 @@ class PlayerWidget(QWidget):
     # -------------------------------------------------------------------------
     # Các hàm điều khiển phát / tua / xoay / âm lượng
     # -------------------------------------------------------------------------
+    def _apply_rotation_to_player(self):
+        """Áp dụng góc xoay vào engine phát và lập tức vẽ lại khung hình xem trước."""
+        rot = int(self._current_rotation) % 360
+
+        if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
+            try:
+                self.mpv_player.video_rotate = rot
+            except Exception:
+                pass
+            try:
+                self.mpv_player.command("set", "video-rotate", str(rot))
+            except Exception:
+                pass
+
+            # Khi video đang tạm dừng (pause), Direct3D 11 swapchain của libmpv
+            # không tự động render lại frame hiện tại nếu chỉ đổi video-rotate.
+            # Kích hoạt tua lại chính xác vị trí mili-giây hiện tại để decoder nạp lại khung hình
+            # và Direct3D hiển thị ngay lập tức góc xoay mới trên màn hình xem trước!
+            if self._current_file_path and self._current_file_path.is_file():
+                try:
+                    if getattr(self.mpv_player, "pause", True):
+                        curr_sec = getattr(self.mpv_player, "time_pos", None)
+                        if curr_sec is None or float(curr_sec) < 0:
+                            curr_sec = max(0.0, self._current_pos_ms / 1000.0)
+                        self.mpv_player.command("seek", float(curr_sec), "absolute+exact")
+                except Exception:
+                    try:
+                        self.mpv_player.command("seek", 0, "relative+exact")
+                    except Exception:
+                        pass
+        elif getattr(self, "_player_failed", False):
+            # Với chế độ xem trước dự phòng FFmpeg CPU (khi GPU không hỗ trợ giải mã)
+            self._request_fallback_preview(self._current_pos_ms)
+
     def rotate_90(self):
         """Xoay theo chiều kim đồng hồ 90 độ."""
         self._current_rotation = (self._current_rotation + 90) % 360
         self._update_rotate_button_ui()
-        if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
-            try:
-                self.mpv_player.video_rotate = self._current_rotation
-            except Exception:
-                try:
-                    self.mpv_player["video-rotate"] = self._current_rotation
-                except Exception:
-                    pass
+        self._apply_rotation_to_player()
         self.rotation_changed.emit(self._current_rotation)
 
     def set_initial_rotation(self, rot: int):
@@ -668,17 +803,17 @@ class PlayerWidget(QWidget):
         self._initial_rotation = int(rot) % 360
         self._current_rotation = self._initial_rotation
         self._update_rotate_button_ui()
-        if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
-            try:
-                self.mpv_player.video_rotate = self._current_rotation
-            except Exception:
-                try:
-                    self.mpv_player["video-rotate"] = self._current_rotation
-                except Exception:
-                    pass
+        self._apply_rotation_to_player()
 
     def get_rotation(self) -> int:
         return self._current_rotation
+
+    def set_rotation(self, rot: int):
+        """Đặt góc xoay hiện tại (dùng cho Undo/Redo) và áp dụng vào trình phát."""
+        self._current_rotation = int(rot) % 360
+        self._update_rotate_button_ui()
+        self._apply_rotation_to_player()
+        self.rotation_changed.emit(self._current_rotation)
 
     def _update_rotate_button_ui(self):
         rot = self._current_rotation % 360
@@ -810,8 +945,8 @@ class PlayerWidget(QWidget):
                 except Exception as e:
                     print(f"[PlayerWidget] Lỗi nạp lại chế độ {mode} qua Qt: {e}")
 
-    def load_video(self, file_path: str | Path, keyframes: list[float] | None = None, fps: float = 30.0, codec: str = ""):
-        """Nạp file video vào media player và hiển thị khung hình đầu tiên."""
+    def load_video(self, file_path: str | Path, keyframes: list[float] | None = None, fps: float = 30.0, codec: str = "", has_video: bool = True):
+        """Nạp file media (video/audio) vào media player và hiển thị khung nhìn phù hợp."""
         self._current_file_path = Path(file_path).resolve()
         self._current_codec = str(codec or "").strip().lower()
         self._player_failed = False
@@ -819,11 +954,15 @@ class PlayerWidget(QWidget):
         self._current_pos_ms = 0
         self._keyframes = sorted(keyframes or [])
         self._fps = fps if (fps and fps > 0) else 30.0
-        self.set_video_enabled(True)
-        self.btn_snapshot.setEnabled(True)
-        self.btn_rotate.setEnabled(True)
-        self.btn_hw_sw.setEnabled(True)
-        self._pending_first_frame = True
+        if hasattr(self, "controls_bar"):
+            self.controls_bar.setVisible(True)
+        self.set_has_video(has_video)
+        if has_video:
+            self.set_video_enabled(True)
+            self.btn_snapshot.setEnabled(True)
+            self.btn_rotate.setEnabled(True)
+            self.btn_hw_sw.setEnabled(True)
+        self._pending_first_frame = has_video
 
         is_av1 = self._current_codec in ("av1", "av01")
         has_hw = has_hardware_av1_decode()
@@ -855,13 +994,7 @@ class PlayerWidget(QWidget):
                 if self._current_speed != 1.0:
                     self.mpv_player.speed = self._current_speed
                 if self._current_rotation != 0:
-                    try:
-                        self.mpv_player.video_rotate = self._current_rotation
-                    except Exception:
-                        try:
-                            self.mpv_player["video-rotate"] = self._current_rotation
-                        except Exception:
-                            pass
+                    self._apply_rotation_to_player()
                 self.btn_play_pause.setText("▶ Phát")
                 return
             except Exception as e:
@@ -912,6 +1045,12 @@ class PlayerWidget(QWidget):
         self._out_point_ms = 0
         self._current_rotation = 0
         self._initial_rotation = 0
+        if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
+            try:
+                self.mpv_player.video_rotate = 0
+                self.mpv_player.command("set", "video-rotate", "0")
+            except Exception:
+                pass
         self.btn_play_pause.setText("▶ Phát")
         self.btn_snapshot.setEnabled(False)
         self.btn_rotate.setEnabled(False)
@@ -924,6 +1063,10 @@ class PlayerWidget(QWidget):
         self._current_codec = ""
         os.environ.pop("QT_FFMPEG_DECODING_HW_DEVICE_TYPES", None)
         self.set_video_enabled(True)
+        self.set_has_video(True)
+        if hasattr(self, "controls_bar"):
+            self.controls_bar.setVisible(False)
+        self._show_active_video_layer()
         if hasattr(self, "lbl_fallback_preview"):
             self.lbl_fallback_preview.clear()
             self.lbl_fallback_preview.setText("")
@@ -1047,6 +1190,51 @@ class PlayerWidget(QWidget):
         """Cập nhật danh sách Keyframe sau khi tiến trình quét ngầm hoàn tất."""
         self._keyframes = sorted(keyframes or [])
 
+    def set_has_video(self, has_video: bool):
+        """Cấu hình giao diện trình phát cho tệp có video hoặc tệp âm thanh thuần túy."""
+        self._has_video = has_video
+        if not has_video:
+            if hasattr(self, "btn_snapshot"):
+                self.btn_snapshot.setVisible(False)
+            if hasattr(self, "btn_rotate"):
+                self.btn_rotate.setVisible(False)
+            if hasattr(self, "btn_hw_sw"):
+                self.btn_hw_sw.setVisible(False)
+            if hasattr(self, "btn_prev_kf"):
+                self.btn_prev_kf.setText("⏮ Tua -5s")
+                self.btn_prev_kf.setToolTip("Tua lùi 5 giây")
+            if hasattr(self, "btn_next_kf"):
+                self.btn_next_kf.setText("Tua +5s ⏭")
+                self.btn_next_kf.setToolTip("Tua tiến 5 giây")
+            if hasattr(self, "btn_step_back"):
+                self.btn_step_back.setText("◀ -1s")
+                self.btn_step_back.setToolTip("Tua lùi 1 giây")
+            if hasattr(self, "btn_step_forward"):
+                self.btn_step_forward.setText("1s ▶")
+                self.btn_step_forward.setToolTip("Tua tiến 1 giây")
+            if hasattr(self, "lbl_audio_title") and self._current_file_path:
+                self.lbl_audio_title.setText(self._current_file_path.name)
+        else:
+            if hasattr(self, "btn_snapshot"):
+                self.btn_snapshot.setVisible(True)
+            if hasattr(self, "btn_rotate"):
+                self.btn_rotate.setVisible(True)
+            if hasattr(self, "btn_hw_sw"):
+                self.btn_hw_sw.setVisible(True)
+            if hasattr(self, "btn_prev_kf"):
+                self.btn_prev_kf.setText("⏮ Keyframe Trước")
+                self.btn_prev_kf.setToolTip("Nhảy lùi về Keyframe (I-frame) gần nhất")
+            if hasattr(self, "btn_next_kf"):
+                self.btn_next_kf.setText("Keyframe Tiếp ⏭")
+                self.btn_next_kf.setToolTip("Nhảy tiến tới Keyframe (I-frame) kế tiếp")
+            if hasattr(self, "btn_step_back"):
+                self.btn_step_back.setText("◀ 1 Frame")
+                self.btn_step_back.setToolTip("Lùi 1 khung hình (~0.033s)")
+            if hasattr(self, "btn_step_forward"):
+                self.btn_step_forward.setText("1 Frame ▶")
+                self.btn_step_forward.setToolTip("Tiến 1 khung hình (~0.033s)")
+        self._show_active_video_layer()
+
     def set_fps(self, fps: float):
         """Cập nhật FPS của video để tua từng khung hình chính xác."""
         if fps and fps > 0:
@@ -1105,7 +1293,13 @@ class PlayerWidget(QWidget):
             self._request_fallback_preview(self._current_pos_ms)
 
     def step_frame(self, direction: int):
-        """Tua tiến (+1) hoặc lùi (-1) đúng 1 khung hình theo FPS của video."""
+        """Tua tiến (+1) hoặc lùi (-1) đúng 1 khung hình theo FPS của video (hoặc 1 giây cho âm thanh)."""
+        if not getattr(self, "_has_video", True):
+            step_ms = 1000
+            new_pos = max(0, self._current_pos_ms + direction * step_ms)
+            self.seek(new_pos)
+            return
+
         if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
             try:
                 if not getattr(self.mpv_player, "pause", True):
@@ -1130,7 +1324,13 @@ class PlayerWidget(QWidget):
         self.seek(new_pos)
 
     def step_keyframe(self, direction: int):
-        """Nhảy nhanh tới Keyframe (I-frame) phía trước hoặc phía sau."""
+        """Nhảy nhanh tới Keyframe (I-frame) phía trước hoặc phía sau (hoặc 5 giây cho âm thanh)."""
+        if not getattr(self, "_has_video", True):
+            step_ms = 5000
+            new_pos = max(0, self._current_pos_ms + direction * step_ms)
+            self.seek(new_pos)
+            return
+
         if not self._keyframes:
             if self._engine_type == "mpv" and hasattr(self, "mpv_player") and self.mpv_player:
                 try:

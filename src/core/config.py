@@ -20,16 +20,21 @@ def get_project_root() -> Path:
 
 def get_tools_dir() -> Path:
     """Trả về đường dẫn tới thư mục tools chứa các file thực thi portable."""
-    # 1. Kiểm tra thư mục tạm của PyInstaller (_MEIPASS) nếu đóng gói bằng cờ --add-data
+    exe_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+
+    # 1. Ưu tiên thư mục tools/ nằm cạnh file .exe hoặc trong thư mục gốc dự án
+    root_tools = get_project_root() / "tools"
+    if root_tools.is_dir() and (root_tools / exe_name).is_file():
+        return root_tools
+
+    # 2. Kiểm tra thư mục tạm của PyInstaller (_MEIPASS) nếu đóng gói bằng cờ --add-data
     if hasattr(sys, "_MEIPASS"):
         meipass_tools = Path(sys._MEIPASS) / "tools"
-        if meipass_tools.is_dir():
+        if meipass_tools.is_dir() and (meipass_tools / exe_name).is_file():
             return meipass_tools
 
-    # 2. Kiểm tra thư mục tools/ nằm cạnh file .exe hoặc trong thư mục gốc dự án
-    tools_dir = get_project_root() / "tools"
-    tools_dir.mkdir(parents=True, exist_ok=True)
-    return tools_dir
+    root_tools.mkdir(parents=True, exist_ok=True)
+    return root_tools
 
 
 def get_ffmpeg_path() -> Path:
@@ -186,6 +191,9 @@ def is_gpu_av1_capable(name: str) -> bool:
     return False
 
 
+_AV1_DECODE_CAPABLE_CACHE: bool | None = None
+
+
 def has_hardware_av1_decode() -> bool:
     """Kiểm tra xem phần cứng GPU của hệ thống hiện tại có hỗ trợ giải mã phần cứng video AV1 hay không.
 
@@ -197,7 +205,12 @@ def has_hardware_av1_decode() -> bool:
     Trả về:
         True nếu trong máy có ít nhất một GPU hỗ trợ giải mã phần cứng AV1, False nếu toàn bộ GPU đều là dòng cũ.
     """
+    global _AV1_DECODE_CAPABLE_CACHE
+    if _AV1_DECODE_CAPABLE_CACHE is not None:
+        return _AV1_DECODE_CAPABLE_CACHE
+
     if sys.platform != "win32":
+        _AV1_DECODE_CAPABLE_CACHE = True
         return True
 
     try:
@@ -218,12 +231,14 @@ def has_hardware_av1_decode() -> bool:
                     continue
 
         if not gpu_names:
+            _AV1_DECODE_CAPABLE_CACHE = True
             return True
 
         # Nếu có ít nhất 1 GPU trên máy tính hỗ trợ giải mã AV1 phần cứng
-        return any(is_gpu_av1_capable(name) for name in gpu_names)
+        _AV1_DECODE_CAPABLE_CACHE = any(is_gpu_av1_capable(name) for name in gpu_names)
+        return _AV1_DECODE_CAPABLE_CACHE
     except Exception:
-        # Nếu có lỗi khi truy vấn registry, mặc định trả về True để không cản trở người dùng
+        _AV1_DECODE_CAPABLE_CACHE = True
         return True
 
 
